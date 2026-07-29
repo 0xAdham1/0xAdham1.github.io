@@ -1,0 +1,131 @@
+---
+title: "OliCyber — Dependency Hell: Racing SQLite Session Store"
+description: "Exploiting a TOCTOU race condition in a SQLite-backed Express session store to bypass balance checks and chain key purchases to get the flag."
+date: 2026-01-24T00:00:00.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+**Event:** OliCyber
+**Category:** Web
+**Vulnerability:** TOCTOU in SQLite-backed session management
+
+---
+
+## The Vulnerable Logic
+
+The app is a key-escalation shop: buy `red_key` → `green_key` → `blue_key` → flag. Each purchase costs 10 coins. You start with 20. You need 40. The math is brutal by design.
+
+The `/buy` endpoint looks safe:
+
+```javascript
+if (req.session.balance < 10) {
+  res.status(400).json({ error: "Not enough balance" });
+  return;
+}
+// ... validation ...
+req.session.balance -= 10;
+```
+
+Sequential. Logical. Fundamentally broken under concurrency.
+
+---
+
+## Why It Breaks
+
+The session store is SQLite via `connect-sqlite3`. SQLite handles concurrency with file-level locking, but `express-session` defaults to `resave: false`. The critical gap: **session reads and writes are not atomic**.
+
+When two requests hit simultaneously:
+1. Both read `balance: 20`
+2. Both pass the check
+3. Both deduct 10
+4. Both write back — result is `balance: 10` instead of `balance: 0`
+
+You spent 10 coins, got two purchases worth of keys.
+
+---
+
+## The Exploit Architecture
+
+### The Healer Swarm
+
+40 threads hammering `GET /`:
+
+```python
+def healer():
+    while not stop_healer.is_set():
+        try:
+            session.get(f"{URL}/", timeout=0.5)
+        except:
+            pass
+```
+
+Why? The initialization middleware:
+
+```javascript
+if (req.session.red_key === undefined || ...) {
+  req.session.red_key = crypto.randomBytes(32).toString("hex");
+  req.session.balance = 20;
+}
+```
+
+Every time a session is reloaded from SQLite in a race window, if the read is corrupted or the session row is locked, the middleware may trigger re-initialization — resetting balance back to 20. The healers keep session state in constant flux, maximizing collision probability.
+
+### The Purchase Loop
+
+```python
+def buy_with_retry(item_name, key_value):
+    while True:
+        res = session.post(..., json={"item": item_name, "key": key_value})
+        if "item" in data:
+            return data["item"]
+        elif "Not enough balance" in res.text:
+            time.sleep(0.5)  # Wait for healer to reset balance
+```
+
+The exploit treats "Not enough balance" as a transient lock collision, not a hard failure. When balance runs out, pause — let the healers corrupt the session back into a usable state — retry.
+
+---
+
+## The Chain
+
+```
+1. Healers saturate server with session reads/writes
+2. Buy red_key   (costs 10, balance races back to 20)
+3. Buy green_key (same race window)
+4. Buy blue_key
+5. Buy flag
+```
+
+The economics don't matter when the ledger is lying.
+
+---
+
+## The Fix
+
+Minimum viable patch — still not truly atomic:
+
+```javascript
+app.post("/buy", async (req, res) => {
+  req.session.reload((err) => {
+    if (err) { /* handle */ }
+    // fresh read, but still races on deduct
+  });
+});
+```
+
+Real fix: database-level transaction wrapping the entire check-deduct-respond flow, or move balance to Redis with atomic `DECR` operations.
+
+---
+
+## Takeaway
+
+SQLite was never meant for high-concurrency session storage. `express-session`'s read-modify-write pattern assumes the store is atomic or single-threaded. Violate that assumption with 40 concurrent threads and the abstraction leaks catastrophically.
+
+The "safe" sequential code becomes theater. The real logic is in the timing — the microseconds between SQLite's `BEGIN` and `COMMIT`.
+
+Exploit source: [github.com/0xAdham/olicyber](https://github.com/0xAdham/olicyber)
+
+---
+
+*0xAdham*

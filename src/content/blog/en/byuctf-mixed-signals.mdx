@@ -1,0 +1,94 @@
+---
+title: "BYUCTF: Mixed Signals"
+description: "Two Go binaries: a process that turns 15 OS signals into VM opcodes via signal.Notify, and a driver that sends it 1817 signals. Recover the ISA from the dispatch, scrape the unrolled signal list, and since the VM is straight-line, let z3 hand you the flag."
+date: 2026-05-31T11:21:47.741Z
+tags: ["ctf", "rev", "golang", "signals", "vm", "z3", "symbolic-execution", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Mixed Signals
+**Category:** Reversing
+**Difficulty:** Hard
+
+## Flag
+
+`byuctf{l3ft_bl1nk3r_5c9125be}`
+
+## Target
+
+Folder `rev/` with two **Go** binaries (debug info, not stripped):
+
+- `mixed_signals`: `./mixed_signals <flag>`; prints nothing and **hangs** (it blocks on a signal channel and swallows SIGTERM, so `timeout` can't kill it, so use `timeout -s KILL`).
+- `program`: the **driver**. Has `find_vm` / `run_program` / `SendSignal` / `pidfdSendSignal`; locates the `mixed_signals` process via `/proc` and sends it a long signal sequence.
+
+## mixed_signals = a signal-driven VM
+
+`main.main`: copies `os.Args[1]` to a 256-byte **tape** at `[rsp+0x30]`, `signal.Notify`s **15** signals, inits `ptr=0, C=0, D=0`, then loops on `chanrecv1` and dispatches on the received signal number. State: `ptr` (`[rsp+0x140]`), regs `C`/`D` (`[rsp+0x2e]`/`[rsp+0x2f]`), tape = the flag. Terminal: `test dl,dl` → `D==0` prints **"Right on!"**, else **"Too bad..."**.
+
+**Opcode table** (recovered from the dispatch):
+
+| Signal | Op | Signal | Op |
+|---|---|---|---|
+| SIGHUP | `ptr++` | SIGFPE | `tape[ptr]=C` |
+| SIGINT | `ptr--` | SIGUSR1 | `D+=C` |
+| SIGQUIT | `D=tape[ptr]` | SIGUSR2 | `D-=C` |
+| SIGILL | `C=tape[ptr]` | SIGPIPE | `D^=C` |
+| SIGTRAP | `D=0` | SIGALRM | `D\|=C` |
+| SIGABRT | `C=0` | **SIGTERM** | **escape: recv next sig → `D += {HUP:1,INT:5,QUIT:10,ILL:50,TRAP:100}`** |
+| SIGBUS | `tape[ptr]=D` | SIGCHLD | **halt: check `D==0`** |
+
+SIGTERM's handler does a *second* `chanrecv1`, consuming the following signal as a constant selector. That's how arbitrary byte constants get built into `D`.
+
+## Extracting the program
+
+`program.run_program` is ~11k lines of **unrolled** `os.(*Process).Signal(VM, sig)` + `time.Sleep(10ms)` calls. Each call's signal is chosen by `lea rcx,[rip+...]#53a2XX` pointing at a `syscall.Signal` constant. Parse `(lea rcx → addr)` before every `Signal` call, resolve `addr → signal value` from `program`'s data: **1817 signals** total.
+
+## Solving with z3
+
+The VM is **straight-line**: `ptr` only moves by constant `HUP`/`INT`, never data-dependent, so it symbolically executes cleanly. Model each tape cell that's *read before written* as an 8-bit `BitVec` (the flag inputs); propagate `C`/`D`/tape as z3 expressions through all 1817 ops; assert `final D == 0`; solve.
+
+```python
+import z3
+seq=[int(x) for x in open('seq.txt').read().split()]
+CONST={1:1,2:5,3:10,4:50,5:100}      # HUP,INT,QUIT,ILL,TRAP
+tape={}; inp={}
+def cell(p):
+    if p not in tape:
+        v=z3.BitVec(f"f_{p}",8); inp[p]=v; tape[p]=v
+    return tape[p]
+ptr=0; C=z3.BitVecVal(0,8); D=z3.BitVecVal(0,8); i=0; finalD=None
+while i<len(seq):
+    s=seq[i]; i+=1
+    if   s==1: ptr+=1
+    elif s==2: ptr-=1
+    elif s==3: D=cell(ptr)
+    elif s==4: C=cell(ptr)
+    elif s==5: D=z3.BitVecVal(0,8)
+    elif s==7: tape[ptr]=D
+    elif s==13: D=D^C
+    elif s==14: D=D|C
+    elif s==15: arg=seq[i]; i+=1; D=D+z3.BitVecVal(CONST.get(arg,100),8)
+    elif s==17: finalD=D
+sol=z3.Solver(); sol.add(finalD==0); sol.check()
+m=sol.model()
+print(bytes(m[inp[p]].as_long() for p in sorted(inp)))   # byuctf{l3ft_bl1nk3r_5c9125be}\x00
+```
+
+Positions 0 to 28 = the flag; cell 29 is the OR-accumulator (solves to 0).
+
+## Verification
+
+Driving the real `mixed_signals "byuctf{l3ft_bl1nk3r_5c9125be}"` with the 1817-signal sequence at a ~12 ms gap → **"Right on!"**.
+
+(Note: letting `program` drive it sometimes yields "Too bad". The 1-deep `signal.Notify` channel drops coalesced signals at its 10 ms cadence. Sending them yourself with a slightly larger gap is reliable.)
+
+## Takeaways
+
+- **Go signal-handler obfuscation:** `signal.Notify` + a `chanrecv` loop turns OS signals into VM opcodes. Map each registered signal to its dispatch block to recover the ISA. Watch for "escape" opcodes that `chanrecv` again to read an operand (SIGTERM here).
+- **Unrolled driver → flat opcode list:** when the program is a giant straight-line sequence of `Signal(sig)` calls, scrape the constants in order; you don't need to run anything.
+- **Straight-line VM ⇒ z3.** No data-dependent branches means `ptr` is concrete; model tape cells as bitvectors, propagate, assert the success condition, and let the solver hand you the flag. Far faster than hand-inverting chained XOR/OR/ADD byte math.
+- Validate opcode semantics with tiny live signal sequences before trusting a big symbolic model (empty→"Right on!", `+1`→"Too bad").
+- Self-handled SIGTERM means `timeout -s KILL` for any dynamic testing.
+
+*0xAdham*

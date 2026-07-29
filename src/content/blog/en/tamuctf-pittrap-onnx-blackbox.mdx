@@ -1,0 +1,115 @@
+---
+title: "TAMU CTF 2025 — pittrap: Black-Box ONNX Neural Network Optimization"
+description: "Solving a black-box neural network challenge at TAMU CTF (gigem) by treating the ONNX model as an oracle and applying simulated annealing to find the winning input."
+date: 2025-03-29T00:00:00.000Z
+tags: ["ctf", "web", "rev"]
+draft: false
+---
+
+## Challenge Overview
+
+**CTF:** TAMU CTF 2025 (gigem)
+**Category:** Misc / Rev
+**Challenge:** pittrap
+
+The challenge gave us an ONNX neural network model with no source, no architecture diagram, and one job: find the input that makes it output something specific. Classic black-box optimization problem.
+
+## Initial Recon
+
+First thing — inspect what we're working with:
+
+```python
+import onnxruntime as ort
+import numpy as np
+
+sess = ort.InferenceSession("pittrap.onnx")
+
+# check input/output shape
+for inp in sess.get_inputs():
+    print(inp.name, inp.shape, inp.type)
+
+for out in sess.get_outputs():
+    print(out.name, out.shape, out.type)
+```
+
+Output told us the expected input shape and the output format. The model takes a fixed-length float vector and outputs a score. Goal: maximize (or hit a threshold on) that score.
+
+No gradients available — it's ONNX, inference only. No white-box access.
+
+## The Approach: Simulated Annealing
+
+Since we can't backpropagate, we treat the model as a pure oracle: feed it inputs, read the output score, iterate.
+
+Simulated annealing is perfect here:
+- Explores the input space without getting trapped in local minima
+- Accepts worse solutions with decreasing probability over time
+- No gradient required
+
+```python
+import onnxruntime as ort
+import numpy as np
+import math
+import random
+
+sess = ort.InferenceSession("pittrap.onnx")
+input_name = sess.get_inputs()[0].name
+input_shape = sess.get_inputs()[0].shape  # e.g. [1, N]
+
+def score(x):
+    x_input = x.reshape(input_shape).astype(np.float32)
+    result = sess.run(None, {input_name: x_input})
+    return float(result[0].flatten()[0])
+
+# Initialize random candidate
+n = input_shape[-1]
+current = np.random.uniform(-1, 1, n)
+current_score = score(current)
+
+best = current.copy()
+best_score = current_score
+
+# Annealing schedule
+T = 1.0
+T_min = 1e-5
+alpha = 0.995
+step_size = 0.1
+
+iteration = 0
+while T > T_min:
+    # Perturb candidate
+    neighbor = current + np.random.randn(n) * step_size
+    neighbor_score = score(neighbor)
+
+    delta = neighbor_score - current_score
+
+    # Accept if better, or probabilistically if worse
+    if delta > 0 or random.random() < math.exp(delta / T):
+        current = neighbor
+        current_score = neighbor_score
+
+    if current_score > best_score:
+        best = current.copy()
+        best_score = current_score
+        print(f"[+] New best: {best_score:.6f} @ iter {iteration}")
+
+    T *= alpha
+    iteration += 1
+
+print(f"\n[*] Final score: {best_score}")
+print(f"[*] Best input: {best}")
+```
+
+## Getting the Flag
+
+Once the score crossed the threshold the model was checking for, the challenge server returned the flag. The model was essentially a learned classifier — it was trained to recognize a specific "correct" input pattern, and SA found it through pure exploration.
+
+## Key Takeaways
+
+- ONNX inference-only models are black boxes — treat them like APIs, not source code
+- Simulated annealing beats random search significantly for continuous input spaces
+- Cooling schedule matters — too fast and you get stuck, too slow and you waste time
+- Start with a wide `step_size` and narrow it as temperature drops for better convergence
+
+---
+
+*— 0xAdham | RootRunners*

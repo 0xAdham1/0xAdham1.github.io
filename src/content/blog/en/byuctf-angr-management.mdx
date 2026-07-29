@@ -1,0 +1,164 @@
+---
+title: "BYUCTF: Angr Management"
+description: "The name baits you toward symbolic execution. But a 'maze of gotos' built from literal cmp-imm → jmp edges is a static CFG. Parse the disassembly, BFS room 0 to the win room, replay 72 moves. No SMT, instant."
+date: 2026-05-31T11:21:47.142Z
+tags: ["ctf", "rev", "control-flow", "static-analysis", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Angr Management
+**Category:** Reversing
+**Difficulty:** Medium
+
+## Flag
+
+`byuctf{g3t_w1th_th3_c0ntr01_fl0w}`
+
+## Target
+
+`<remote-host>:1368`. Remote serves the real flag; local `angr_management_test` ships a **dummy** flag (`byuctf{test_flag}`) so you can develop offline.
+
+- ELF 64-bit PIE, x86-64, **not stripped**, `pwn.red/jail` (`JAIL_TIME=900`).
+- Prompt: *"I built a maze using goto statements! Navigate through it successfully to get the flag."* The name baits you into reaching for **angr**, which is the slow path here.
+
+## Recon
+
+Functions: `get_input`, `main` (huge: `0x1317`→`0xee14`, ~56 KB, the maze), `flush_buf`.
+
+`get_input` (`0x1270`):
+
+```
+fgets(buf, 5, stdin)      ; up to 4 chars + NUL
+strcspn(buf, "\n")        ; strip newline
+strtol(buf, &end, 10)     ; -> returns an integer in eax
+```
+
+So **each input is a number** (0 to 9999). Running it:
+
+```
+$ echo AAAA | ./angr_management_test
+Arrived at 0
+That's not a valid destination
+```
+
+`main` is 624 repeated "room" blocks. Per-room pattern:
+
+```
+mov    $0x0,%esi                 ; room id N
+lea    "Arrived at %d\n",%rdi
+call   printf
+call   get_input                 ; your destination number -> eax
+cmpl   $0x100,-0x4(%rbp)         ; input == 256 ?
+jne    .next
+jmp    6c68                      ; valid edge: goto another room
+.next:
+cmpl   $0x58,-0x4(%rbp)          ; input == 88 ?
+je     3192                      ; second valid edge
+puts("That's not a valid destination")
+exit(1)
+```
+
+It's a **directed graph**: each room prints its id, reads a number, and that number selects which room you jump to. Wrong number → exit. Tower of `goto`s = a maze with one or two exits per room.
+
+**Win room** = room `0x270` (624) at `0xede5`: no `get_input`, just `puts(flag); return`:
+
+```
+ede5: mov $0x270,%esi ; "Arrived at 624"
+edf9: call printf
+edfe: lea 0xf047 (the flag string)
+ee08: call puts
+ee12: leave ; ret
+```
+
+## Why not angr
+
+The challenge *name* screams symbolic execution, but driving angr through 72 chained `fgets`/`strtol` rounds (ASCII→int modeling, deep state) is slow and fiddly. The structure is a **static, fully-recoverable CFG**: every edge is a literal `cmp $imm` → `jmp addr`. So just parse the graph from the disassembly and BFS. Exact, instant, no SMT.
+
+## Solution
+
+Dump disassembly, parse rooms + edges, BFS room 0 → room 624.
+
+```python
+import re
+from collections import deque
+lines = open('main.asm').read().splitlines()          # objdump -d --no-show-raw-insn
+rx = re.compile(r'^\s+([0-9a-f]+):\t(.*)$')
+insns = [(int(m.group(1),16), m.group(2).strip()) for l in lines if (m:=rx.match(l))]
+idx = {a:i for i,(a,_) in enumerate(insns)}
+
+# a "room" = `mov $imm,%esi` that feeds the "Arrived at %d" printf (# f019)
+rooms = {}
+for i,(a,t) in enumerate(insns):
+    if (m:=re.match(r'mov\s+\$0x([0-9a-f]+),%esi$', t)) and \
+       any('# f019' in insns[j][1] for j in range(i, min(i+4, len(insns)))):
+        rooms[a] = int(m.group(1),16)
+starts = sorted(rooms)
+WIN = next(a for a,r in rooms.items() if r == 0x270)
+
+# jump targets land on the room's mov-esi or the nop just before it
+tgt2room = {}
+for a in starts:
+    tgt2room[a] = a
+    if insns[idx[a]-1][1].startswith('nop'):
+        tgt2room[insns[idx[a]-1][0]] = a
+
+# edges: after get_input, collect (cmp value -> jmp target) until exit
+adj = {}
+for k,a in enumerate(starts):
+    end = idx[starts[k+1]] if k+1 < len(starts) else len(insns)
+    j = idx[a]
+    while j < end and 'get_input' not in insns[j][1]: j += 1
+    el, pend = [], None
+    while j < end:
+        t = insns[j][1]
+        if (mc := re.match(r'cmpl\s+\$0x([0-9a-f]+),-0x4\(%rbp\)$', t)):
+            pend = int(mc.group(1),16)
+        elif (mj := re.match(r'jne\s+([0-9a-f]+)', t)) and pend is not None:
+            if (mt := re.match(r'jmp\s+([0-9a-f]+)', insns[j+1][1])):
+                el.append((pend, tgt2room.get(int(mt.group(1),16)))); pend = None
+        elif (mje := re.match(r'je\s+([0-9a-f]+)', t)) and pend is not None:
+            el.append((pend, tgt2room.get(int(mje.group(1),16)))); pend = None
+        elif 'exit@plt' in t: break
+        j += 1
+    adj[a] = el
+
+START = 0x1323
+prev, mv, q = {START:None}, {}, deque([START])
+while q:
+    cur = q.popleft()
+    if cur == WIN: break
+    for val, room in adj.get(cur, []):
+        if room is not None and room not in prev:
+            prev[room], mv[room] = cur, val; q.append(room)
+
+path, c = [], WIN
+while c is not None: path.append(c); c = prev[c]
+path.reverse()
+moves = [mv[path[i]] for i in range(1, len(path))]
+open('moves.txt','w').write('\n'.join(map(str, moves)) + '\n')
+print(len(moves), "moves")   # -> 72
+```
+
+Verify locally then replay on the remote:
+
+```python
+import socket
+moves = open('moves.txt').read().split()
+s = socket.create_connection(('<remote-host>', 1368))
+for m in moves: s.sendall(m.encode()+b'\n')
+# ... recv -> byuctf{g3t_w1th_th3_c0ntr01_fl0w}
+```
+
+Path = 72 moves: `256 423 495 307 39 250 391 119 105 499 123 104 536 257 608 253 74 365 543 300 571 506 595 192 383 112 17 556 93 318 114 276 18 216 449 414 124 503 71 407 78 285 481 66 381 531 82 337 600 86 230 327 472 393 348 331 14 207 402 548 528 168 530 490 378 408 518 202 87 342 329 624`
+
+Local run ends `Arrived at 624 / byuctf{test_flag}`; remote gives the real flag.
+
+## Takeaways
+
+- **Read the structure before reaching for the heavy tool.** A "maze of gotos" with literal `cmp imm` → `jmp` edges is a static CFG. Recover it directly. angr is for when constraints aren't trivially readable; here every edge is a constant.
+- Anchor the parse on a stable signal (the `# f019` "Arrived at %d" format ref) to reliably segment 624 near-identical blocks.
+- The flag is the lesson: `g3t_w1th_th3_c0ntr01_fl0w`. Control-flow recovery beats brute symbolic execution.
+- Dev against the dummy-flag local binary; only the final `moves.txt` replay needs the network.
+
+*0xAdham*

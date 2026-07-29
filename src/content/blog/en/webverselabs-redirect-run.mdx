@@ -1,0 +1,72 @@
+---
+title: "WebVerse Labs — Redirect Run"
+description: "The browser followed the redirect. Burp didn't."
+date: 2026-05-24T04:17:22.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+**Platform:** WebVerse Labs
+**Challenge:** Redirect Run
+**Category:** Web
+**Difficulty:** Easy
+
+---
+
+## Step 1 — Find the Shortlink
+
+The Quikpay landing page has a live demo shortlink sitting right on it:
+
+```
+qp.link/r/qp-r4-7821ab
+```
+
+![Quikpay landing page with shortlink](/blog/redirect-run/landingpage.png)
+
+---
+
+## Step 2 — Follow It In Burp
+
+Visit the shortlink with Burp intercepting. The browser sees a "thanks for your purchase" page and moves on. Burp catches the 302 response before the redirect fires — and the body isn't empty.
+
+![Burp intercepting the 302 redirect](/blog/redirect-run/link.png)
+
+---
+
+## Step 3 — Read the Debug Comment
+
+Buried in the 302 response body:
+
+```html
+<!-- Quikpay redirect debug (production safe? — TODO: strip before launch) —
+request_token: qp-r4-7821ab
+upstream_status: 200
+upstream_latency_ms: 38
+internal_ref: WEBVERSE{...}
+reconciliation_window: 24h
+cookie_strip_policy: strict
+note: leave this in until QA signs off on the new tracing pipeline
+-->
+```
+
+![Flag visible in 302 response body](/blog/redirect-run/burpflag.png)
+
+`internal_ref` is the flag. The TODO never got done.
+
+---
+
+## Why It Works
+
+3xx redirect responses have a body — browsers just don't render it. The dev team left a debug comment in the intermediate response assuming nobody would ever read it. Burp reads everything.
+
+---
+
+## The Fix
+
+- Never embed sensitive data in redirect response bodies
+- Strip all debug comments before shipping to production
+- QA sign-off shouldn't be gated on leaving secrets in HTTP responses
+
+The browser skipped right past it. Burp didn't.
+
+*0xAdham*

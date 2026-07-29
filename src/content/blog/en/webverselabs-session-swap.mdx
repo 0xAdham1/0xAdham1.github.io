@@ -1,0 +1,85 @@
+---
+title: "WebVerse Labs — Session Swap"
+description: "The staff portal trusts the browser to tell the truth about who's logged in. It shouldn't."
+date: 2026-05-23T00:00:00.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+**Platform:** WebVerse Labs
+**Challenge:** Session Swap
+**Category:** Web
+**Difficulty:** Easy
+
+---
+
+## Step 1 — Login With Anything
+
+The portal has zero credential validation. Any username, any password — you're in.
+
+```
+Username: test
+Password: test
+```
+
+Lands you on the dashboard as Jessa, Front Desk Lead, badge RD-04412.
+
+![Login page](/blog/session-swap/login.png)
+
+---
+
+## Step 2 — Intercept the Cookie
+
+Intercept the `/dashboard` request in Burp Suite. The cookie is sitting there in plain English:
+
+```
+Cookie: role=user; badge=RD-04412
+```
+
+No JWT. No HMAC. No Base64. Raw plaintext.
+
+![Burp Suite cookie intercept](/blog/session-swap/burprole.png)
+
+---
+
+## Step 3 — Swap the Role
+
+Change `role=user` to `role=admin` and forward:
+
+```
+Cookie: role=admin; badge=RD-04412
+```
+
+The server accepts it without a single complaint.
+
+![Logged in as admin](/blog/session-swap/logedin.png)
+
+---
+
+## Step 4 — Admin Console
+
+`/admin` loads. Full access. The Q2 Internal Reference Token is sitting in an "Internal Memo — For Administrative Review Only" banner, issued by Ridgeline IT & Security. That's the flag.
+
+![Admin console](/blog/session-swap/admin.png)
+
+![Flag](/blog/session-swap/flag.png)
+
+---
+
+## Why It Works
+
+The server never validates the cookie server-side. No cryptographic signature means anyone can modify the role field freely. The browser is the authority — and the browser lies.
+
+---
+
+## The Fix
+
+- Sign cookies with HMAC or use properly verified JWTs
+- Never store authorization data client-side without integrity protection
+- Validate roles server-side on every privileged request, never trust cookie values directly
+
+Plaintext cookies are just suggestions.
+
+---
+
+*0xAdham*

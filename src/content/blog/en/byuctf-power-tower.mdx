@@ -1,0 +1,131 @@
+---
+title: "BYUCTF: Power Tower"
+description: "Multi-prime RSA where every factor is ≤ 2^16 and the exponent is a 25-high right-associative power tower. Factoring is trivial trial division; the real trick is inverting the tower via Euler's theorem applied recursively. The whole modulus chain stays 2^16-smooth."
+date: 2026-05-31T11:21:48.118Z
+tags: ["ctf", "crypto", "rsa", "multi-prime", "eulers-theorem", "tetration", "byuctf"]
+draft: false
+---
+
+**Platform:** BYUCTF
+**Challenge:** Power Tower
+**Category:** Crypto
+**Difficulty:** Hard
+
+## Flag
+
+`byuctf{eulers_phi_phunction_is_a_phun_phunction}`
+
+## Target
+
+`<remote-host>:1359`. *"multi-prime RSA where each factor of n is at most 2^16. Prove you know a fast algorithm to invert the power tower!"*
+
+- Server prints `n`, `c`, `e`, then you must send `m` **within 1 second**.
+- `n` ≈ 392 bits = product of **25 distinct ≤16-bit primes**.
+- `e` is printed as a `^`-joined list, e.g. `e = 79^31^23^34^...^47` (25 terms), a **right-associative power tower** `79^(31^(23^(...)))`, an astronomically large exponent.
+
+> The provided `chall_modified.py` sets `NUM_EXPS=1` (single small exponent), a simplification to explain the encryption. The **real server uses a 25-high tower**, which is the actual challenge.
+
+## Two sub-problems
+
+1. **Factor `n`.** Trivial: every prime ≤ 2^16, so trial-divide by the ~6500 primes below 65536. A 392-bit `n` factors in milliseconds. Then `φ(n) = ∏(pᵢ − 1)`.
+2. **Invert the tower.** Decryption needs `d = E⁻¹ mod φ(n)`, but `E` (the tower) is far too large to materialise. The fix: you only need `E mod φ(n)`, and `E⁻¹ mod φ = (E mod φ)⁻¹ mod φ`.
+
+## The key idea: iterated modular tetration
+
+Compute `E mod φ` without ever building `E`, via Euler's theorem recursively:
+
+`a^X mod m = a^( (X mod φ(m)) + φ(m) ) mod m`, valid when `X ≥ log2(m)` (the `+φ(m)` term is what makes it correct even when `gcd(a,m) ≠ 1`, the "phun" part).
+
+Apply it down the tower: to get `a₀^(rest) mod m`, recurse to get `rest mod φ(m)`, lift by `φ(m)`, then one `pow`. **Why it terminates cheaply:** `φ(n) = ∏(pᵢ−1)` with every `pᵢ−1 ≤ 2^16`, so `φ(n)` is **2^16-smooth**. And `φ` of a 2^16-smooth number stays 2^16-smooth (each prime power `q^a` contributes `q^{a-1}(q−1)`, and `q−1 < 2^16`). So **every modulus in the whole recursion factors by the same small trial division**. Depth ≤ 25, all fast.
+
+The `+φ(m)` lift is only valid when the sub-exponent is truly `≥ log2(m)`. The very top of a tower is a *small* number (e.g. `47`), so I gate the lift with a **capped tower evaluation** (`tower_capped`) that returns the exact value if `< 2^800`, else a sentinel, giving an exact `≥ φ(m)` comparison at every level.
+
+## Solution
+
+```python
+import socket, re, time
+from math import prod
+
+N = 1 << 16
+sieve = bytearray([1]) * (N+1); sieve[0]=sieve[1]=0
+for i in range(2, int(N**0.5)+1):
+    if sieve[i]: sieve[i*i::i] = b'\x00' * len(sieve[i*i::i])
+primes = [i for i in range(2, N+1) if sieve[i]]
+
+def inv(a, m):                       # modular inverse via extended euclid
+    a %= m; lo, hi, x0, x1 = a, m, 1, 0
+    while lo > 1:
+        q = hi // lo; lo, hi = hi - q*lo, lo; x0, x1 = x1 - q*x0, x0
+    return x0 % m
+
+def factor_smooth(x):                # works because every modulus is 2^16-smooth
+    f = {}
+    for p in primes:
+        if p*p > x: break
+        while x % p == 0: f[p] = f.get(p,0)+1; x //= p
+    if x > 1: f[x] = f.get(x,0)+1
+    return f
+def phi_of(x):
+    r = 1
+    for p,a in factor_smooth(x).items(): r *= (p-1)*p**(a-1)
+    return r
+
+CAP = 1 << 800
+def tower_capped(arr):               # exact tower value, or CAP if >= 2^800
+    v = arr[-1]
+    for a in reversed(arr[:-1]):
+        if a == 1: v = 1; continue
+        v = CAP if v >= 800 else min(a**v, CAP)
+    return v
+
+def tower_mod(arr, m):               # E mod m for E = arr[0]^arr[1]^...  (right-assoc)
+    if m == 1: return 0
+    if len(arr) == 1: return arr[0] % m
+    ph = phi_of(m)
+    sub = tower_mod(arr[1:], ph)
+    if tower_capped(arr[1:]) >= ph: sub += ph     # Euler lift, gated by exact compare
+    return pow(arr[0], sub, m)
+
+s = socket.create_connection(('<remote-host>', 1359), timeout=20)
+buf = b''; s.settimeout(15)
+while b'What is m?' not in buf:
+    d = s.recv(65536); buf += d
+txt = buf.decode(errors='replace')
+n = int(re.search(r'n = (\d+)', txt).group(1))
+c = int(re.search(r'c = (\d+)', txt).group(1))
+arr = [int(x) for x in re.search(r'e = ([\d\^]+)', txt).group(1).split('^')]
+
+facs, x = [], n
+for p in primes:
+    if x % p == 0:
+        facs.append(p); x //= p
+        if x == 1: break
+assert x == 1
+phi  = prod(f-1 for f in facs)
+Emod = tower_mod(arr, phi)
+d    = inv(Emod, phi)
+m    = pow(c, d, n)
+assert pow(m, Emod, n) == c          # verify: m^E ≡ c  (since E ≡ Emod mod φ)
+s.sendall(str(m).encode() + b'\n')   # ~17 ms total, well under the 1 s limit
+print(s.recv(4096).decode())
+```
+
+```
+primes=25  verify=True  compute=16.8ms
+Correct!!! Here's the flag: byuctf{eulers_phi_phunction_is_a_phun_phunction}
+```
+
+## Pitfalls
+
+- **Don't compute the tower.** The naïve `E = a**(b**(c**...))` hangs forever building a number with billions of digits (my first attempt did exactly this). You never need `E`, only `E mod φ`.
+- **`gcd(a, m) ≠ 1` levels.** Plain `a^(X mod φ(m))` is wrong when the base shares a factor with the modulus; the `+ φ(m)` lift fixes it, but only when the sub-exponent really is `≥ log2(m)`, hence the capped check (the topmost term is small).
+- **Verify before sending** (`pow(m, Emod, n) == c`) so you don't waste the 1-second window on a wrong association/parse. Right-associativity was correct here on the first try.
+- φ(n) for squarefree `n` is `∏(pᵢ−1)`; `pᵢ−1` divides it, so `E·d ≡ 1 mod φ` ⇒ `≡ 1 mod (pᵢ−1)` for every prime → decryption is valid across all 25 factors.
+
+## Takeaways
+
+- "Power tower" / tetration mod is **Euler's theorem applied recursively**; the whole trick is that the modulus chain `φ(φ(...φ(n)))` stays smooth here, so each level factors trivially.
+- Smooth/small-prime multi-prime RSA has **no security**. Factoring is just bounded trial division. The difficulty was entirely the exponent representation, not the modulus.
+- General reusable primitive: `tower_mod(arr, m)` for evaluating any power tower modulo `m`.
+
+*0xAdham*

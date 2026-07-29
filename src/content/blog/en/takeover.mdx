@@ -1,0 +1,110 @@
+---
+title: "TryHackMe — TakeOver Writeup"
+description: "Subdomain enumeration challenge on TryHackMe. Finding a hidden subdomain via SSL certificate inspection to grab the flag."
+date: 2026-02-09T00:00:00.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+## Challenge Overview
+
+**Platform:** TryHackMe
+**Challenge:** TakeOver
+**Category:** Web / Subdomain Enumeration
+
+The description hints at subdomain enumeration — that's basically handing you the attack path. Let's go.
+
+---
+
+## Step 1 — Add Host Entry
+
+Add the target domain and IP to `/etc/hosts` so the lab resolves:
+
+```bash
+echo "10.49.189.165 futurevera.thm" | sudo tee -a /etc/hosts
+```
+
+---
+
+## Step 2 — Nmap Scan
+
+```bash
+nmap -sV -sC 10.49.189.165
+```
+
+Output:
+
+```
+PORT    STATE SERVICE  VERSION
+22/tcp  open  ssh      OpenSSH 8.2p1 Ubuntu
+80/tcp  open  http     Apache httpd 2.4.41
+443/tcp open  ssl/http Apache httpd 2.4.41
+```
+
+Port 80 redirects to `https://futurevera.thm`. SSL cert on 443 shows `commonName=futurevera.thm`. Nothing too exciting yet.
+
+---
+
+## Step 3 — Subdomain Enumeration
+
+The room description says there are subdomains — let's find them with gobuster:
+
+```bash
+gobuster vhost \
+  -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt \
+  -u futurevera.thm \
+  -t 50 \
+  --append-domain
+```
+
+Got hits. Add them all to `/etc/hosts`:
+
+```bash
+echo "10.49.189.165 portal.futurevera.thm" | sudo tee -a /etc/hosts
+echo "10.49.189.165 blog.futurevera.thm" | sudo tee -a /etc/hosts
+echo "10.49.189.165 support.futurevera.thm" | sudo tee -a /etc/hosts
+```
+
+---
+
+## Step 4 — SSL Certificate Inspection
+
+`portal` and `blog` are dead ends. `support.futurevera.thm` looks empty too — but check the SSL certificate.
+
+Visit `https://support.futurevera.thm` in the browser, click the padlock → view certificate → check the **Subject Alternative Names**.
+
+There it is:
+
+```
+secrethelpdesk934752.support.futurevera.thm
+```
+
+Hidden subdomain embedded in the cert. Classic.
+
+---
+
+## Step 5 — Get the Flag
+
+Add it to `/etc/hosts`:
+
+```bash
+echo "10.49.189.165 secrethelpdesk934752.support.futurevera.thm" | sudo tee -a /etc/hosts
+```
+
+Visit it on port 80:
+
+```
+http://secrethelpdesk934752.support.futurevera.thm
+```
+
+Flag.
+
+---
+
+## Key Takeaway
+
+SSL certificates are recon goldmines. SANs (Subject Alternative Names) often list internal subdomains, staging environments, and hidden endpoints that never show up in DNS brute-forcing. Always check the cert.
+
+---
+
+*— 0xAdham *

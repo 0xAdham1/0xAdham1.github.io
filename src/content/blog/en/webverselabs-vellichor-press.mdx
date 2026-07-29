@@ -1,0 +1,91 @@
+---
+title: "WebVerse Labs — Vellichor Press"
+description: "The engineer left a TODO in the HTML. He never came back to finish it."
+date: 2026-05-25T15:15:00.000Z
+tags: ["ctf", "web"]
+draft: false
+---
+
+**Platform:** WebVerse Labs
+**Challenge:** Vellichor Press
+**Category:** Web
+**Difficulty:** Easy
+
+---
+
+## Step 1 — Poking Around in Burp
+
+Nothing obvious on the site. Routed traffic through Burp and started going through the requests.
+
+![Vellichor Press landing page](/blog/vellichor-press/landing.png)
+
+Spotted `/staff/admin` in the site map — hit it directly:
+
+```
+GET /staff/admin
+```
+
+![/staff/admin returning 404 in Burp](/blog/vellichor-press/burp-admin-404.png)
+
+404. Dead end, or so it seemed.
+
+---
+
+## Step 2 — Read the Description
+
+Went back to the challenge description: *"a draft admin note sits where nobody scrolls."*
+
+Nobody scrolls. Not Burp. Not the browser. The page source.
+
+---
+
+## Step 3 — Ctrl+U
+
+Opened the raw HTML. Scrolled to the very bottom — right before the closing `</body>` tag:
+
+```html
+<!--
+  TODO(elias): remove before final launch. Tracking note while the
+  reconciliation script runs against the Stripe export — do NOT push
+  this to production after Tuesday's deploy.
+
+  admin shortcut (drafts pane):  /staff/admin?token=stripe-recon-2026
+  reconcile internal-ref:        WEBVERSE{...}
+
+  — e.l, 2026-03-12, 11:48 ET. Removed by:                       .
+-->
+```
+
+![Admin TODO comment with flag in page source](/blog/vellichor-press/flag.png)
+
+Flag in `internal-ref`. Token for the admin panel sitting right next to it. "Removed by:" — blank. Elias never came back.
+
+---
+
+## Why It Works
+
+HTML comments ship to the browser on every single request. They don't render — but they're not hidden. `Ctrl+U` is all it takes. The description said "where nobody scrolls." That was the hint.
+
+---
+
+## What I Did Wrong
+
+Jumped straight into Burp and started poking endpoints without reading the challenge description properly. Spent time on `/staff/admin` hitting a 404 when the answer was sitting in plain sight in the source the whole time. Skipped the hint, wasted the time.
+
+---
+
+## What I Learned
+
+Read the description. Every word in a CTF challenge is placed intentionally. *"Where nobody scrolls"* was pointing directly at the page source. The recon instinct was right — the execution order was wrong. Burp first, source never — that's the lazy route.
+
+---
+
+## The Fix
+
+- Never put credentials, tokens, or internal paths in HTML comments
+- TODO comments are not a removal strategy
+- Read your own source before you ship
+
+Don't skip the description.
+
+*0xAdham*
