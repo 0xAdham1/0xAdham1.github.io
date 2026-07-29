@@ -29,6 +29,12 @@ jobs:
       - name: Build static site
         env:
           NEXT_PUBLIC_SITE_URL: https://0xadham1.github.io
+          # Unused at runtime (static site, no backend) but env.ts validates them at build time.
+          DATABASE_URL: postgres://user:pass@localhost:5432/db
+          UPSTASH_REDIS_REST_URL: https://example.com
+          UPSTASH_REDIS_REST_TOKEN: ci-dummy
+          IP_ADDRESS_SALT: ci-dummy-salt
+          BETTER_AUTH_SECRET: ci-dummy-secret-0123456789
         run: bun run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
