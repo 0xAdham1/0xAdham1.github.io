@@ -2,7 +2,7 @@
 title: "API Hacking for Beginners: Breaking REST and GraphQL"
 description: "A simple, beginner friendly guide to how REST and GraphQL APIs get hacked, how to test them, how defenders fix the bugs, and where to practice legally."
 date: "2026-10-07"
-author: "Youssif"
+author: "0xAdham"
 tags: ["api security", "rest", "graphql", "bug bounty", "pentesting", "web security"]
 draft: false
 ---
@@ -66,7 +66,7 @@ That `23` is the first thing a hacker notices. If it is your profile at `/api/us
 
 Most REST findings come from the same short list. Learn these seven and you can test almost any API.
 
-### 1. BOLA, also called IDOR (the king of API bugs)
+### Bug 1: BOLA, also called IDOR (the king of API bugs)
 
 BOLA means Broken Object Level Authorization. In plain words: the API checks that you are logged in, but forgets to check that the thing you are asking for actually belongs to you.
 
@@ -74,7 +74,7 @@ You saw it already. Your profile is `/api/users/23`. You change the number to `2
 
 Why it is so common: the ID is right there in the URL, and authorization checks are easy to forget. This single bug class is behind a huge share of real API breaches.
 
-### 2. Broken authentication
+### Bug 2: Broken authentication
 
 This is about how the API proves who you are, and all the ways that can go wrong:
 
@@ -85,7 +85,7 @@ This is about how the API proves who you are, and all the ways that can go wrong
 
 If the lock on the front door is weak, nothing else matters.
 
-### 3. Excessive data exposure
+### Bug 3: Excessive data exposure
 
 The API sends back more than the screen shows. The app might only display a name, but the JSON response also contains the email, phone, address, and password hash. The frontend hides the extra fields, the API hands them over anyway.
 
@@ -101,7 +101,7 @@ Always read the raw response, not the pretty page. The interesting data is often
 }
 ```
 
-### 4. Mass assignment
+### Bug 4: Mass assignment
 
 The API lets you send fields you were never supposed to touch, and it trusts them. You register an account and the API accepts whatever JSON you send. So you add one extra line:
 
@@ -115,7 +115,7 @@ The API lets you send fields you were never supposed to touch, and it trusts the
 
 If the server blindly saves every field, you just made yourself an admin. The same trick can flip `"verified": true`, change a `"balance"`, or set a `"role"`.
 
-### 5. Broken function level authorization (BFLA)
+### Bug 5: Broken function level authorization (BFLA)
 
 BOLA is about objects. BFLA is about actions. Here the API fails to check that you are allowed to use a whole function, usually an admin one. A normal user finds the admin route and just calls it:
 
@@ -127,7 +127,7 @@ Authorization: Bearer <normal-user-token>
 
 If a regular account can hit admin endpoints or use admin methods, that is BFLA. Hidden in the app does not mean protected on the server.
 
-### 6. Injection
+### Bug 6: Injection
 
 The API takes your input and drops it straight into a database query, a command, or another system without cleaning it. Classic SQL injection still shows up in APIs through JSON bodies and query parameters:
 
@@ -137,7 +137,7 @@ The API takes your input and drops it straight into a database query, a command,
 
 If that changes how many results come back, the input is reaching the database raw. The same family includes NoSQL injection, command injection, and more.
 
-### 7. No rate limiting
+### Bug 7: No rate limiting
 
 The API does not cap how many requests you can send. That opens the door to brute forcing passwords, guessing one time codes, scraping every record by looping through IDs, and simple denial of service. A login that accepts ten thousand attempts a minute has no rate limiting.
 
@@ -220,7 +220,7 @@ Here is the key idea for a hacker. GraphQL is powerful and flexible by design. T
 
 GraphQL has its own flavor of problems on top of the usual ones. Here are the big ones.
 
-### 1. Introspection left on
+### Bug 1: Introspection left on
 
 GraphQL can describe itself. There is a built in feature called introspection that returns the entire schema: every type, every query, every mutation, every field, every argument. It is meant for developers, but if it is left enabled in production, it hands an attacker the full map of the API.
 
@@ -239,11 +239,11 @@ query {
 
 If that returns a giant schema, you now know every operation that exists, including the hidden admin ones. This is usually your first move against a GraphQL target.
 
-### 2. Broken authorization
+### Bug 2: Broken authorization
 
 Just like BOLA and BFLA in REST, GraphQL often forgets to check whether you are allowed to touch a field or run an operation. The schema might expose an `adminDeleteUser` mutation, or let you query `user(id: 24)` for an account that is not yours. Flexibility makes this worse, because one query can reach deep through related objects, and the check is often missing on the nested path.
 
-### 3. Batching and brute force
+### Bug 3: Batching and brute force
 
 GraphQL lets you send many operations in one request. That is convenient, and it is also a way around weak rate limiting. If a login only limits requests, you can pack many login attempts into a single request using aliases:
 
@@ -257,15 +257,15 @@ mutation {
 
 One request, many guesses. The same idea speeds up brute forcing one time codes and tokens.
 
-### 4. Deeply nested query denial of service
+### Bug 4: Deeply nested query denial of service
 
 Because objects relate to each other, you can write a query that loops through relationships again and again, forcing the server to do enormous work from one small request. A thread has an author, the author has posts, each post has a thread, and so on, nested many levels deep. Without query depth or cost limits, a single query can knock the server over.
 
-### 5. Injection, still
+### Bug 5: Injection, still
 
 GraphQL is just a layer in front of your data. Whatever arguments you pass can still flow into a database or a system command underneath. SQL and NoSQL injection live happily inside GraphQL arguments, so the field values deserve the same testing you would do in REST.
 
-### 6. Information leakage in errors
+### Bug 6: Information leakage in errors
 
 GraphQL error messages are often chatty. A wrong field name can make the server suggest the correct one. Verbose errors leak internal field names, types, and sometimes stack traces, which quietly rebuilds the schema for you even when introspection is switched off.
 
