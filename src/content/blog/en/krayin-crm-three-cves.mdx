@@ -1,0 +1,430 @@
+---
+title: "A Patch Is Not a Fix: Chaining Krayin CRM's Blind Spots"
+description: "A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7."
+date: 2026-10-19T00:00:00.000Z
+tags: [krayin, laravel, idor, bola, ssrf, dns-rebinding, cve, appsec]
+---
+
+A white-box review of one open-source Laravel CRM, written up for the people who patch
+it and the people who just need to know how bad it was. All three fixed in 2.2.7.
+
+- **Author:** Adham · @0xAdham1
+- **Target:** `krayin/laravel-crm`
+- **Reported:** 2026-10-05
+- **Fixed in:** 2.2.7
+- **CVEs:** 3
+
+| CVE | Class | Severity | One-liner |
+|---|---|---|---|
+| **CVE-2026-112286** | IDOR | High 7.1 | Two Quote read endpoints a prior fix never reached; any restricted agent reads competitors' pricing, addresses and PII with a plain GET. |
+| **CVE-2026-112287** | BOLA | High 8.3 | Read path says 401, write path says 200 for the same email ID. Trash, bulk-delete, edit and re-send other users' mail. |
+| **CVE-2026-112288** | SSRF · TOCTOU | Low 3.1 | The SSRF filter resolves the host once and throws it away; the request resolves again. Answer public, then loopback, and you're inside. |
+
+---
+
+# CVE-2026-112286
+
+## Cross-user data disclosure in Krayin's Quote module
+
+`HIGH · CVSS 4.0 · 7.1` · `CWE-639` · `IDOR` · `incomplete-fix`
+
+### TL;DR
+
+- **The bug:** two Quote endpoints never check who owns the record, so a restricted agent reads any user's quotes just by changing a number.
+- **The impact:** deal pricing, billing and shipping addresses, totals and linked customer emails, across the whole tenant.
+- **Status:** reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112286.
+
+### At a glance
+
+| | |
+|---|---|
+| **Product** | Krayin CRM (`krayin/laravel-crm`) |
+| **Component** | `Quote/QuoteController.php` |
+| **Class** | IDOR / cross-user read disclosure · CWE-639 |
+| **Severity** | High, CVSS 4.0 **7.1** · `CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N` |
+| **Affected / fixed** | `< 2.2.7`, fixed in `2.2.7` |
+
+### Why this matters
+
+Picture a sales team where each rep should only see their own deals. This bug lets any rep
+pull up **everyone's** quotes: what competitors are charging, who the customers are, where
+they're billed. No admin rights, no clever tooling, just a logged-in account and a web
+request. It's a confidentiality leak across every customer in the system.
+
+### In plain English
+
+It's a coat check that hands over any coat to whoever names a number, and the tickets are
+just *1, 2, 3…* so you can ask for every coat in the room. Here the "ticket" is the
+`lead_id` in the URL; the attendant (the API) looks it up and hands it back without ever
+checking the coat is yours.
+
+### Attack flow
+
+```text
+Agent (owns nothing)                         /admin/quotes/search
+  |  GET /search?search=  (valid agent session)        |
+  | --------------------------------------------------> |
+  |                    SELECT * FROM quotes   (never restricted to the agent's IDs)
+  |  200: every tenant's quotes — subjects,             |
+  |       addresses, totals, customer PII               |
+  | <-------------------------------------------------- |
+```
+
+The write path of this controller was locked down months earlier by CVE-2026-61460. The
+read path was never in that report, so it was never touched. That gap is this CVE: a
+textbook **incomplete fix**.
+
+### Deep dive: root cause and the two endpoints
+
+Krayin scopes each user to a set of records via `users.view_permission`
+(`global`/`group`/`individual`), resolved by `bouncer()->getAuthorizedUserIds()`. Record
+actions are meant to check the record's `user_id` against that set. The Quote write methods
+do (`preventUnauthorizedAccess()`); these two reads don't.
+
+**B1: `leadProducts()` → `GET /admin/quotes/lead-products/{lead_id}`**
+
+```php
+// fetch by id only, no ownership check
+$lead = $this->leadRepository->findOrFail($leadId);
+return response()->json(['data' => $this->getLeadProductsForQuote($lead)]);
+```
+
+For any `lead_id`, the caller gets each product's name, quantity, unit price and line
+total, the full pricing of another user's deal.
+
+**B2: `search()` → `GET /admin/quotes/search`**
+
+```php
+$quotes = $this->quoteRepository
+    ->pushCriteria(app(RequestCriteria::class))
+    ->all();  // no data-scope filter
+return QuoteResource::collection($quotes);
+```
+
+`->all()` applies only the request's search criteria, never a restriction to the caller's
+authorized IDs. `QuoteResource` then serializes subject, description, billing/shipping
+address, totals, the linked person (customer PII) and related leads, for every user's
+quotes.
+
+### PoC: walkthrough and captured leak
+
+Local instance, Krayin 2.2 branch. Owner (global, ID 1) owns a lead and a quote; Agent
+(individual) owns nothing but holds the Quote feature permission. Both endpoints are GETs,
+so no CSRF token is needed.
+
+```bash
+curl -s "$BASE/admin/quotes/lead-products/1" \
+  -H "Cookie: $COOKIE" -H "Accept: application/json" | jq .
+```
+
+```json
+{ "data": [ {
+  "product_id": 1, "name": "Owner Secret Widget",
+  "quantity": 3, "price": 1234.56, "total": 3703.68
+} ] }
+```
+
+The agent owns nothing, yet reads Owner's product, quantity and exact pricing. The `search`
+endpoint goes further, returning full `QuoteResource` objects with billing addresses and the
+customer's email. The published PoC (`CVE-2026-112286.py`) is read-only and refuses any
+non-local `--base`.
+
+### Fix: remediation that shipped in 2.2.7
+
+Two additions, both mirroring patterns already in the codebase:
+
+```php
+// leadProducts()
+$lead = $this->leadRepository->findOrFail($leadId);
+$this->preventUnauthorizedAccess($lead->user_id);  // add this
+
+// search(): constrain to the caller's scope before ->all()
+if ($userIds = bouncer()->getAuthorizedUserIds()) {
+    $this->quoteRepository->whereIn('user_id', $userIds);
+}
+```
+
+CVE-2026-61460 fixed object-level authorization on the write path of this controller and
+four siblings. This finding is the same bug class on the two read endpoints that fix never
+reached, reported so the Quote-module fix could actually be completed.
+
+### Timeline
+
+- **2026-10-04:** Found during a white-box review of the 2.2 branch
+- **2026-10-05:** Reported to the vendor with advisory + PoC
+- **2026-10-09:** Confirmed in a local lab
+- **2026-10-19:** CVE-2026-112286 published, fixed in 2.2.7
+
+### Takeaways
+
+- **Hunter:** when a vendor patches an auth bug, check the *read* endpoints of the same controller; fixes track reports, not bug classes.
+- **Dev:** a collection endpoint needs the same scope filter as the DataGrid that lists it. `->all()` with only search criteria is a leak.
+
+---
+
+# CVE-2026-112287
+
+## Broken Object Level Authorization in the Mail module
+
+`HIGH · CVSS 8.3` · `CWE-639` · `BOLA`
+
+### TL;DR
+
+- **The bug:** the Mail module checks ownership when you *read* an email but not when you *modify or delete* one.
+- **The impact:** a low-privilege agent can trash, bulk-delete, edit and re-send other users' emails, and the edit response leaks the thread's contents too.
+- **Status:** reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112287.
+
+### At a glance
+
+| | |
+|---|---|
+| **Product** | Krayin CRM (`krayin/laravel-crm`) |
+| **Component** | `Mail/EmailController.php` |
+| **Class** | BOLA on the write path · CWE-639 |
+| **Severity** | High, CVSS 3.1 **8.3** · `AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:H` |
+| **Affected / fixed** | `< 2.2.7`, fixed in `2.2.7` |
+
+### Why this matters
+
+Email threads in a CRM are the record of a customer relationship. This bug lets one sales
+agent quietly **destroy another agent's correspondence**, individually or in bulk, and
+tamper with records they're not even allowed to open. It can also flip a draft into the
+outbox and send mail on someone else's thread. That's damage to data integrity and
+availability, with a side of data leakage.
+
+### In plain English
+
+Think of a room with two doors. The front door has a lock that checks your badge: try to
+*read* the mail and it says "not yours, 401." The back door, the one for deleting and
+editing, was never fitted with a lock at all. Same room, same mail; one door guards it and
+the other waves you straight through.
+
+### Attack flow
+
+```text
+Agent (individual scope)
+  GET    /admin/mail/inbox/1   ->  401 Unauthorized   (read is gated)
+  DELETE /admin/mail/1         ->  200 "deleted"      (write is NOT gated)
+  GET    /admin/mail/trash/1   ->  401 Unauthorized   (still can't view what it just trashed)
+```
+
+That contradiction, the same ID returns `401` on read and `200` on delete, is the entire
+vulnerability, provable in two requests.
+
+### Deep dive: root cause and affected endpoints
+
+The read path resolves the record's owner and enforces scope. `view()`:
+
+```php
+if ($userIds = bouncer()->getAuthorizedUserIds()) {
+    $ownerIds = array_filter([$email->lead?->user_id, $email->person?->user_id]);
+    if ($ownerIds && empty(array_intersect($ownerIds, $userIds))) {
+        abort(401, trans('admin::app.errors.unauthorized'));
+    }
+}
+```
+
+None of the four mutating actions do this. Three things make it exploitable rather than
+theoretical: the guard is simply **absent** (not weakened); the route ACL is only
+*feature*-level ("may this user use mail"), which every agent passes; and `update()` reads
+`request('id') ?? $id`, so a body ID overrides the URL, making it a disclosure primitive
+too.
+
+| Route | Missing guard |
+|---|---|
+| `PUT /admin/mail/edit/{id}` | `preventUnauthorizedAccess` |
+| `DELETE /admin/mail/{id}` | `preventUnauthorizedAccess` |
+| `POST /admin/mail/mass-update` | `filterAuthorizedRecords` |
+| `POST /admin/mail/mass-destroy` | `filterAuthorizedRecords` |
+
+Every sibling module (Person, Organization, Quote, Activity) routes its bulk operations
+through `filterAuthorizedRecords()`. Mail is the one that skipped the ownership filter on the
+delete and modify path.
+
+### PoC: trash, bulk-delete and the disclosure write
+
+The PoC only ever drives reversible paths (`type=trash`, `is_read`) and refuses a non-local
+base. Step 1 trashes Owner's email that step 0 just proved the agent can't read:
+
+```bash
+curl -s -X DELETE "$BASE/admin/mail/1" \
+  -H "Cookie: $COOKIE" -H "X-XSRF-TOKEN: $XSRF" \
+  --data-urlencode "type=trash"
+# HTTP 200 { "message": "Email deleted successfully." }
+```
+
+Flipping `is_read` via `update()` returns the full `EmailResource`, so the same request that
+tampers also leaks:
+
+```json
+{ "id":1, "subject":"Owner private email",
+  "reply":"secret body", "is_read":1,
+  "person":[ {"value":"cust@owner.example"} ] }
+```
+
+> Only ever send `type=trash` while testing. Any other value hard-deletes.
+
+### Fix: remediation and why it's a distinct CVE
+
+Apply the ownership gate the read path already uses to every mutating action:
+
+```php
+$email = $this->emailRepository->findOrFail($id);
+$this->preventUnauthorizedAccess(array_filter([
+    $email->lead?->user_id,
+    $email->person?->user_id,
+]));
+```
+
+Route the bulk IDs through `filterAuthorizedRecords()`, and drop the `request('id') ?? $id`
+fallback so the path is authoritative. Shipped in 2.2.7. Krayin has a run of prior BOLA/IDOR
+CVEs (LeadController, PersonController, the attachment download path, the v2.2.6 ACL mapping
+fix), none covered the mutating actions of `EmailController`.
+
+### Timeline
+
+- **2026-10-04:** Found during a white-box review of the 2.2 branch
+- **2026-10-05:** Reported to the vendor with advisory + PoC
+- **2026-10-09:** Confirmed in a local lab
+- **2026-10-19:** CVE-2026-112287 published, fixed in 2.2.7
+
+### Takeaways
+
+- **Hunter:** a read-side 401 next to a write-side 200 on the same ID is the cleanest BOLA proof there is. Always test the mutating verbs separately.
+- **Dev:** feature-level ACL is not object-level authorization. If reads check ownership, every write on the same object must too.
+
+---
+
+# CVE-2026-112288
+
+## Bypassing the webhook SSRF filter with DNS rebinding
+
+`LOW · CVSS 3.1` · `CWE-918` · `CWE-367` · `TOCTOU`
+
+### TL;DR
+
+- **The bug:** the webhook SSRF guard resolves the target host once to check it's safe, then the HTTP client resolves it *again* to connect.
+- **The impact:** control the DNS and you answer "public, safe" to the check and `127.0.0.1` / cloud-metadata to the request, reaching inside the network.
+- **Status:** a bypass of the fix for CVE-2026-38527; fixed properly in 2.2.7.
+
+### At a glance
+
+| | |
+|---|---|
+| **Product** | Krayin CRM (`krayin/laravel-crm`) |
+| **Component** | `WebhookService::isSafeEndpoint()` |
+| **Class** | SSRF via DNS rebinding (resolve-then-request TOCTOU) · CWE-918 / CWE-367 |
+| **Severity** | Low, CVSS 3.1 **3.1** · `AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N` |
+| **Affected / fixed** | `>= 2.2.5, < 2.2.7`, fixed in `2.2.7` |
+
+### Why this matters
+
+Krayin can fire a webhook from a workflow: the server itself makes an outbound HTTP
+request. There's a filter whose whole job is to stop that request from reaching the
+company's own internal systems (like the cloud-metadata service that holds credentials).
+This finding **walks straight past that filter**, so an ordinary authenticated user can make
+the server knock on internal doors it was never meant to touch.
+
+### In plain English
+
+Security at the gate asks for the visitor's name and checks their ID: looks fine, public
+address, let them in. But by the time the visitor actually walks through the door, a
+*different* person is wearing that name tag. The "name" is the hostname; the ID check is the
+DNS lookup the guard does; the walk-in is the second DNS lookup the HTTP client does a moment
+later. The attacker controls what each lookup returns.
+
+### Attack flow
+
+```text
+isSafeEndpoint() [guard]        attacker DNS (TTL 0)        Guzzle [HTTP client]
+  |  resolve rebind.test (T0)  -->  93.184.216.34  (public — passes the check)
+  |                            <--  guard says SAFE
+  |                                                 request rebind.test (T1)
+  |                                 127.0.0.1 / 169.254.169.254  <-- answer #2
+  |                                                 connects to internal target => SSRF
+```
+
+The IP validated at T0 is simply discarded; Guzzle re-resolves at T1 and connects to
+whatever it gets. Set a zero TTL so the second lookup isn't cached. You don't strictly need
+rebinding either; plain round-robin DNS mixing a public and a private answer defeats the
+guard non-deterministically.
+
+### Deep dive: the TOCTOU, and what the guard *does* get right
+
+```php
+// isSafeEndpoint(): validate
+foreach ($ips as $ip) {
+    if (! filter_var($ip, FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        return false;  // validated at time T0
+    }
+}
+return true;
+
+// ...later, triggerWebhook(): use
+$response = $this->client->request($method, $data['end_point'], $options);
+//                           ^ Guzzle re-resolves the HOST at T1 (> T0)
+```
+
+**Scope it honestly, the guard isn't useless.** It re-checks inside the `on_redirect`
+handler, so the redirect-based pivot is closed; and decimal/octal IP literals fail
+validation. The one unpinned path is the *initial* request's re-resolution. There's also a
+secondary gap: `FILTER_FLAG_NO_RES_RANGE` doesn't reliably flag IPv4-mapped IPv6
+(`::ffff:169.254.169.254`), which can pass and still connect on a dual-stack host.
+
+**This is blind SSRF.** `triggerWebhook()` discards the response body, so there's no
+reflected read: exfiltration needs an internal service that acts on the request alone, or an
+oracle. That's why it's Low (3.1, `AC:H`, blind), not a straight critical metadata read.
+
+### PoC: loopback rebinding harness
+
+The whole chain runs on loopback: a rebinding DNS server on `127.0.0.1:5353` that answers
+public on query #1 and `127.0.0.1` on every query after (TTL 0), plus a loopback listener
+standing in for the internal service. Driving the repo's unmodified `isSafeEndpoint()` with
+the real client options:
+
+```text
+isSafeEndpoint('http://rebind.test/') => true
+  -> filter said SAFE (it resolved the PUBLIC answer)
+
+HTTP 200   body: INTERNAL-SECRET-RESPONSE
+>>> Guzzle connected to the LOOPBACK target (127.0.0.1) <<<
+
+[dns] A query #1 for rebind.test -> 93.184.216.34
+[dns] A query #2 for rebind.test -> 127.0.0.1
+```
+
+The guard said "public, safe" and the request still hit `127.0.0.1`. That's the whole bug in
+one trace.
+
+### Fix: pin the connection to the validated IP
+
+The root cause is the second resolution, so pin the connection to the IP the guard
+validated:
+
+- Resolve **once**, validate every A/AAAA address, then force the client to connect to that exact IP (Guzzle's `CURLOPT_RESOLVE`) while keeping the `Host` header. Reject answer-sets that mix ranges.
+- Apply the same pin inside `on_redirect`: resolve and pin the target, don't just re-validate the hostname.
+- Normalize IPv4-mapped IPv6 before the range check and reject `::ffff:*` into private space. Consider an allowlist on top of the denylist.
+
+2.2.7 pins the request to the validated IP. CVE-2026-38527 was the original unguarded SSRF;
+the vendor fixed it by adding this guard. This finding shows the guard is bypassable, so it
+gets its own ID: an incomplete-fix of a security control.
+
+### Timeline
+
+- **2026-10-04:** Found during a white-box review of the 2.2 branch
+- **2026-10-05:** Reported with advisory + local rebinding harness
+- **2026-10-09:** Confirmed with the repo's unmodified guard + real client options
+- **2026-10-19:** CVE-2026-112288 published, fixed in 2.2.7
+
+### Takeaways
+
+- **Hunter:** any "resolve, validate, then request" flow is a TOCTOU candidate. If the check and the use resolve DNS separately, rebinding wins.
+- **Dev:** validating a hostname's IP and then connecting by hostname pins nothing. Connect to the exact IP you validated, not the name.
+
+---
+
+*CTF player and bug bounty hunter on HackerOne / Bugcrowd. All three findings were reported
+to the vendor before publication and are fixed in Krayin 2.2.7. PoC scripts are read-only or
+reversible and refuse non-local targets. Test only against systems you own or are authorised
+to assess.*
