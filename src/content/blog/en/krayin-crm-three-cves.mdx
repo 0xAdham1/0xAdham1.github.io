@@ -60,15 +60,12 @@ checking the coat is yours.
 
 ### Attack flow
 
-```text
-Agent (owns nothing)                         /admin/quotes/search
-  |  GET /search?search=  (valid agent session)        |
-  | --------------------------------------------------> |
-  |                    SELECT * FROM quotes   (never restricted to the agent's IDs)
-  |  200: every tenant's quotes — subjects,             |
-  |       addresses, totals, customer PII               |
-  | <-------------------------------------------------- |
-```
+| Step | Actor → Endpoint | What happens |
+|---|---|---|
+| 1 | Agent → `GET /admin/quotes/search?search=` | A valid low-privilege agent session, owning no records |
+| 2 | App → Database | `SELECT * FROM quotes`, never restricted to the agent's authorized IDs |
+| 3 | Database → App | Every tenant's quotes come back |
+| 4 | App → Agent | `200` with subjects, billing/shipping addresses, totals and customer PII |
 
 The write path of this controller was locked down months earlier by CVE-2026-61460. The
 read path was never in that report, so it was never touched. That gap is this CVE: a
@@ -201,12 +198,13 @@ the other waves you straight through.
 
 ### Attack flow
 
-```text
-Agent (individual scope)
-  GET    /admin/mail/inbox/1   ->  401 Unauthorized   (read is gated)
-  DELETE /admin/mail/1         ->  200 "deleted"      (write is NOT gated)
-  GET    /admin/mail/trash/1   ->  401 Unauthorized   (still can't view what it just trashed)
-```
+As the restricted (individual-scope) agent, against an email owned by another user:
+
+| Step | Request | Response | What it proves |
+|---|---|---|---|
+| 1 | `GET /admin/mail/inbox/1` | `401 Unauthorized` | read is gated |
+| 2 | `DELETE /admin/mail/1` (`type=trash`) | `200 "deleted"` | write is **not** gated |
+| 3 | `GET /admin/mail/trash/1` | `401 Unauthorized` | still can't view the email it just trashed |
 
 That contradiction, the same ID returns `401` on read and `200` on delete, is the entire
 vulnerability, provable in two requests.
@@ -335,14 +333,11 @@ later. The attacker controls what each lookup returns.
 
 ### Attack flow
 
-```text
-isSafeEndpoint() [guard]        attacker DNS (TTL 0)        Guzzle [HTTP client]
-  |  resolve rebind.test (T0)  -->  93.184.216.34  (public — passes the check)
-  |                            <--  guard says SAFE
-  |                                                 request rebind.test (T1)
-  |                                 127.0.0.1 / 169.254.169.254  <-- answer #2
-  |                                                 connects to internal target => SSRF
-```
+| Step | Phase | `rebind.test` resolves to | Outcome |
+|---|---|---|---|
+| 1 | `isSafeEndpoint()` check (T0) | `93.184.216.34` (public) | passes the filter, "safe" |
+| 2 | Guzzle request (T1) | `127.0.0.1` / `169.254.169.254` (answer #2) | connects to the internal target |
+| 3 | — | — | SSRF, the guard is bypassed (TOCTOU) |
 
 The IP validated at T0 is simply discarded; Guzzle re-resolves at T1 and connects to
 whatever it gets. Set a zero TTL so the second lookup isn't cached. You don't strictly need
