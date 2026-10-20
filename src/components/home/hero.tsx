@@ -1,122 +1,87 @@
 'use client'
 
-import { AnimatePresence, motion } from 'motion/react'
-import { useTranslations } from 'next-intl'
-import { useEffect, useState } from 'react'
+import { motion } from 'motion/react'
 
 import { BlurImage } from '@/components/blur-image'
-import { cn } from '@/utils/cn'
+import { Link } from '@/components/ui/link'
 
-const WORDS = [
-  {
-    // i18n-check t('homepage.hero.amazing')
-    key: 'amazing',
-    className: 'from-[#872627] to-[#c0392b]',
-  },
-  {
-    // i18n-check t('homepage.hero.stunning')
-    key: 'stunning',
-    className: 'from-[#a63133] to-[#872627]',
-  },
-  {
-    // i18n-check t('homepage.hero.fantastic')
-    key: 'fantastic',
-    className: 'from-[#b03a3c] to-[#e2605a]',
-  },
-  {
-    // i18n-check t('homepage.hero.attractive')
-    key: 'attractive',
-    className: 'from-[#872627] to-[#d7bab3]',
-  },
+const INDEX = [
+  { n: '01', label: 'Research', href: '/research' },
+  { n: '02', label: 'Projects', href: '/projects' },
+  { n: '03', label: 'Blog', href: '/blog' },
 ] as const
+
+const LINES = ['OFFENSIVE', 'SECURITY', 'RESEARCH'] as const
 
 export function Hero() {
   return (
-    <div className='my-16 flex justify-between'>
-      <Introduction />
-      <Avatar />
-    </div>
-  )
-}
+    <section className='my-16 sm:my-24'>
+      <div className='flex items-start justify-between gap-6'>
+        <div className='font-mono text-xs tracking-[0.25em] text-muted-foreground uppercase'>
+          <span className='text-primary'>( 00 )</span> — 0xAdham
+        </div>
+        <Avatar />
+      </div>
 
-function Introduction() {
-  const [index, setIndex] = useState(0)
-  const t = useTranslations()
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setIndex((prev) => (prev + 1) % WORDS.length)
-    }, 2000)
-
-    return () => {
-      clearInterval(interval)
-    }
-  }, [])
-
-  const WORD = WORDS[index % WORDS.length] ?? WORDS[0]
-
-  return (
-    <div className='space-y-4'>
-      <h1 className='space-y-2 text-xl font-semibold sm:text-3xl'>
-        <motion.div initial={{ x: -20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ ease: 'easeOut' }}>
-          {t('homepage.hero.line-1')}
-        </motion.div>
-        <motion.div initial={{ x: -30, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ ease: 'easeOut' }}>
-          <motion.span layout>{t('homepage.hero.line-2-left')}</motion.span>
-          <motion.div layout className='relative inline-block overflow-hidden align-bottom'>
-            <AnimatePresence mode='popLayout' initial={false}>
-              <motion.span
-                key={index}
-                initial={{ y: 100, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                exit={{ y: -100, opacity: 0 }}
-                transition={{ type: 'tween', duration: 0.3 }}
-                layout
-                className={cn('mx-1.75 inline-block bg-linear-to-r bg-clip-text text-transparent', WORD.className)}
-              >
-                {t(`homepage.hero.${WORD.key}`)}
-              </motion.span>
-            </AnimatePresence>
-          </motion.div>
-          <motion.span layout className='inline-block'>
-            {t('homepage.hero.line-2-right')}
+      <h1 className='mt-10 font-semibold tracking-tighter text-foreground'>
+        {LINES.map((line, i) => (
+          <motion.span
+            key={line}
+            className={line === 'SECURITY' ? 'block text-primary' : 'block'}
+            style={{ fontSize: 'clamp(2.75rem, 11vw, 7rem)', lineHeight: 0.92 }}
+            initial={{ y: 24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ ease: 'easeOut', duration: 0.4, delay: i * 0.08 }}
+          >
+            {line}
           </motion.span>
-        </motion.div>
-        <motion.div initial={{ x: -40, opacity: 0 }} animate={{ x: 0, opacity: 1 }} transition={{ ease: 'easeOut' }}>
-          {t('homepage.hero.line-3')}
-        </motion.div>
+        ))}
       </h1>
-      <motion.div
-        initial={{ x: -50, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        transition={{ ease: 'easeOut' }}
-        className='text-sm text-muted-foreground'
+
+      <motion.p
+        className='mt-8 max-w-xl font-mono text-sm leading-relaxed text-muted-foreground'
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.3 }}
       >
-        {t('homepage.hero.location-timezone')}
-      </motion.div>
-    </div>
+        Web CTF player and bug bounty hunter. I break access control, authentication and
+        server-side logic to learn how systems get exploited — and fixed.
+        <span className='mt-2 block text-foreground/60'>Egypt · UTC/GMT +2</span>
+      </motion.p>
+
+      <div className='mt-10 flex flex-wrap gap-x-10 gap-y-3 border-t border-border pt-6 font-mono text-sm'>
+        {INDEX.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className='group inline-flex items-center gap-2 text-muted-foreground transition-colors hover:text-foreground'
+          >
+            <span className='text-primary'>({item.n})</span>
+            <span className='underline-offset-4 group-hover:underline'>{item.label} →</span>
+          </Link>
+        ))}
+      </div>
+    </section>
   )
 }
 
 function Avatar() {
-  const t = useTranslations()
-
   return (
     <motion.div
-      className='relative hidden size-28 md:block'
+      className='relative hidden size-24 shrink-0 md:block'
       initial={{ scale: 0 }}
       animate={{ scale: 1 }}
       transition={{ duration: 0.3 }}
     >
       <BlurImage
         src='/images/avatar.png'
-        className='size-28 rounded-full'
+        className='size-24 rounded-full'
         width={1024}
         height={1024}
-        alt={t('homepage.hero.image-alt')}
+        alt='0xAdham'
         lazy={false}
       />
-      <div className='absolute inset-0 -z-10 bg-linear-to-tl from-[#872627] to-[#1e1d1c] opacity-50 blur-2xl' />
+      <div className='absolute inset-0 -z-10 bg-linear-to-tl from-[#872627] to-[#1e1d1c] opacity-60 blur-2xl' />
     </motion.div>
   )
 }

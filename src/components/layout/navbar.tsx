@@ -12,14 +12,15 @@ export function Navbar() {
 
   return (
     <nav className='hidden md:block'>
-      <ul className='flex items-center gap-2'>
-        {HEADER_LINKS.map((link) => (
+      <ul className='flex items-center gap-1'>
+        {HEADER_LINKS.map((link, i) => (
           <li key={link.href}>
             <Link
               href={link.href}
               data-active={pathname === link.href}
-              className='px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-active:text-foreground'
+              className='group inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground data-active:text-foreground'
             >
+              <span className='font-mono text-xs text-primary/70'>{`(0${i + 1})`}</span>
               {t(link.labelKey)}
             </Link>
           </li>

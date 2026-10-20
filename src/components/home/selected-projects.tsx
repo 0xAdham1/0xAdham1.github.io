@@ -37,11 +37,12 @@ export function SelectedProjects(props: SelectedProjectsProps) {
       className='relative my-24'
     >
       <motion.h2
-        className='text-center text-3xl font-semibold'
+        className='flex items-baseline gap-3 border-t border-border pt-6 text-2xl font-semibold tracking-tight sm:text-3xl'
         initial={{ y: 30, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ duration: 0.3 }}
       >
+        <span className='font-mono text-sm text-primary'>(01)</span>
         {t('homepage.selected-projects.title')}
       </motion.h2>
       <motion.div
