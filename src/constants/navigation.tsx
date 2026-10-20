@@ -34,6 +34,12 @@ export const HEADER_LINKS = [
     labelKey: 'common.labels.projects',
   },
   {
+    icon: <ShieldIcon />,
+    href: '/research',
+    // i18n-check t('common.labels.research')
+    labelKey: 'common.labels.research',
+  },
+  {
     icon: <UserCircleIcon />,
     href: '/about',
     // i18n-check t('common.labels.about')

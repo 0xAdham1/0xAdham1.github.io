@@ -1,0 +1,37 @@
+---
+title: Research
+description: CVEs, vulnerability research and responsible disclosure by 0xAdham.
+---
+
+## CVEs
+
+Vulnerabilities I found and disclosed, each reported to the vendor before
+publication and documented in a full writeup.
+
+### Krayin CRM
+
+A white-box review of [Krayin CRM](https://github.com/krayin/laravel-crm)
+(`krayin/laravel-crm`) turned up three issues, all fixed in **2.2.7**:
+
+- [CVE-2026-112286](https://nvd.nist.gov/vuln/detail/CVE-2026-112286) — Quote module IDOR, cross-user read (CWE-639)
+- [CVE-2026-112287](https://nvd.nist.gov/vuln/detail/CVE-2026-112287) — Mail module BOLA on the write path (CWE-639)
+- [CVE-2026-112288](https://nvd.nist.gov/vuln/detail/CVE-2026-112288) — Webhook SSRF filter bypass via DNS rebinding (CWE-918 / CWE-367)
+
+Writeup: [A Patch Is Not a Fix: Chaining Krayin CRM's Blind Spots](/blog/krayin-crm-three-cves)
+
+## Bug bounty
+
+I test web targets on **HackerOne**, **Bugcrowd** and **Intigriti**. My focus is
+server-side and access-control bugs rather than surface-level reflected issues:
+IDOR / BOLA, broken authentication and authorization, SSRF, injection and
+business-logic flaws.
+
+## Focus areas
+
+- **Access control** — IDOR, BOLA, privilege escalation, broken tenant isolation
+- **Authentication** — session handling, JWT and OAuth flaws, SSO
+- **Server-side** — SSRF, SQL injection, SSTI, deserialization
+- **Logic & timing** — business-logic abuse and race conditions
+
+Everything is handled through responsible disclosure: findings go to the vendor or
+program first, and details are published only once a fix is available.

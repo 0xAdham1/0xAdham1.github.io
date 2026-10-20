@@ -3,7 +3,7 @@ import '@/styles/globals.css'
 import type { Metadata, Viewport } from 'next'
 
 import { SpeedInsights } from '@vercel/speed-insights/next'
-import { Geist, Geist_Mono, Noto_Sans_SC, Noto_Sans_TC } from 'next/font/google'
+import { Inter_Tight, JetBrains_Mono, Noto_Sans_SC, Noto_Sans_TC } from 'next/font/google'
 import { notFound } from 'next/navigation'
 import { hasLocale, NextIntlClientProvider } from 'next-intl'
 import { setRequestLocale } from 'next-intl/server'
@@ -35,12 +35,12 @@ export const viewport: Viewport = {
   ],
 }
 
-const geistSans = Geist({
+const geistSans = Inter_Tight({
   variable: '--font-geist-sans',
   subsets: ['latin'],
 })
 
-const geistMono = Geist_Mono({
+const geistMono = JetBrains_Mono({
   variable: '--font-geist-mono',
   subsets: ['latin'],
 })
