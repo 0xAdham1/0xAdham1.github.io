@@ -11,22 +11,22 @@ const WORDS = [
   {
     // i18n-check t('homepage.hero.amazing')
     key: 'amazing',
-    className: 'from-[#ff1835] to-[#ffc900]',
+    className: 'from-[#872627] to-[#c0392b]',
   },
   {
     // i18n-check t('homepage.hero.stunning')
     key: 'stunning',
-    className: 'from-[#0077ff] to-[#00e7df]',
+    className: 'from-[#a63133] to-[#872627]',
   },
   {
     // i18n-check t('homepage.hero.fantastic')
     key: 'fantastic',
-    className: 'from-[#7f00de] to-[#ff007f]',
+    className: 'from-[#b03a3c] to-[#e2605a]',
   },
   {
     // i18n-check t('homepage.hero.attractive')
     key: 'attractive',
-    className: 'from-[#2ecc70] to-[#1ca085]',
+    className: 'from-[#872627] to-[#d7bab3]',
   },
 ] as const
 
@@ -116,7 +116,7 @@ function Avatar() {
         alt={t('homepage.hero.image-alt')}
         lazy={false}
       />
-      <div className='absolute inset-0 -z-10 bg-linear-to-tl from-purple-700 to-orange-700 opacity-50 blur-2xl' />
+      <div className='absolute inset-0 -z-10 bg-linear-to-tl from-[#872627] to-[#1e1d1c] opacity-50 blur-2xl' />
     </motion.div>
   )
 }

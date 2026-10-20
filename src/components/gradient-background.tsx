@@ -31,13 +31,13 @@ export function GradientBackground(props: GradientBackgroundProps) {
         preserveAspectRatio='xMidYMid meet'
       >
         <g filter={`url(#${orangeId})`}>
-          <ellipse cx='898.121' cy='7.207' fill='#FFB800' fillOpacity='.43' rx='284.881' ry='69.058' />
+          <ellipse cx='898.121' cy='7.207' fill='#c0392b' fillOpacity='.43' rx='284.881' ry='69.058' />
         </g>
         <g filter={`url(#${redId})`}>
-          <ellipse cx='727.789' cy='48.819' fill='#E93F3F' fillOpacity='.43' rx='284.881' ry='131.671' />
+          <ellipse cx='727.789' cy='48.819' fill='#872627' fillOpacity='.43' rx='284.881' ry='131.671' />
         </g>
         <g filter={`url(#${blueId})`}>
-          <ellipse cx='504.666' cy='27.364' fill='#3F64E9' fillOpacity='.43' rx='284.881' ry='89.316' />
+          <ellipse cx='504.666' cy='27.364' fill='#5e1718' fillOpacity='.43' rx='284.881' ry='89.316' />
         </g>
         <defs>
           <Filter id={orangeId} width='1042.08' height='610.439' x='377.079' y='-298.012' />
