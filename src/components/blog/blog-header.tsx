@@ -49,6 +49,7 @@ export function BlogHeader(props: BlogHeaderProps) {
         <BlurImage
           src={`/images/blog/${post.slug}/cover.png`}
           className='rounded-lg'
+          imageClassName='aspect-[1200/630] w-full object-cover'
           width={1200}
           height={630}
           lazy={false}

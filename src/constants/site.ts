@@ -8,7 +8,7 @@ export const SITE_EMAIL = '0xadham.sh@gmail.com'
 
 // Security-lab / CTF profiles
 export const SITE_HACKTHEBOX_URL = 'https://app.hackthebox.com/users/2596885'
-export const SITE_TRYHACKME_URL = 'https://tryhackme.com/p/shayblabn1'
+export const SITE_TRYHACKME_URL = 'https://tryhackme.com/p/Shaiblaban'
 export const SITE_FLAGYARD_URL = 'https://flagyard.com/profile/4f3cbeb3-05fd-4b3a-a31f-44697aebd737'
 export const SITE_WEBVERSE_URL = 'https://dashboard.webverselabs-pro.com/u/0xAdham'
 export const SITE_CYBERTALENTS_URL = 'https://cybertalents.com/members/0xAdham/profile'
