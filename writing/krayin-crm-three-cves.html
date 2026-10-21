@@ -13,6 +13,12 @@
   <title>A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham</title>
   <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
   <link rel="stylesheet" href="/assets/site.css">
+<style>
+.poc-source { margin: 16px 0; border: 1px solid var(--line); background: var(--panel-2); }
+.poc-source summary { cursor: pointer; padding: 10px 12px; color: var(--accent, #ff3428); font-family: var(--mono); font-size: 13px; }
+.poc-source summary:hover { color: var(--ink); }
+.poc-source pre { margin: 0; border-top: 1px solid var(--line); max-height: 560px; overflow: auto; }
+</style>
 </head>
 <body>
   <header class="site-header">
@@ -195,8 +201,8 @@ with a low-privilege agent session against an authorized local test instance:</p
   --login-email agent@test.local --login-password agent123 \
   --lead-ids 1
 </code></pre>
-<details>
-<summary>View the complete <code>CVE-2026-112286.py</code> source</summary>
+<details class="poc-source">
+<summary>Show more — view the full <code>CVE-2026-112286.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
 import http.cookiejar
@@ -400,8 +406,8 @@ if __name__ == &quot;__main__&quot;:
     main()
 </code></pre>
 </details>
-<details>
-<summary>View the complete <code>CVE-2026-112287.py</code> source</summary>
+<details class="poc-source">
+<summary>Show more — view the full <code>CVE-2026-112287.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
 import http.cookiejar
@@ -935,8 +941,8 @@ engagement mode that runs the authoritative DNS server and callback listener:</p
 <pre><code class="language-bash"># prove the resolver returns public on query #1 and loopback on query #2
 python3 CVE-2026-112288.py --selftest
 </code></pre>
-<details>
-<summary>View the complete <code>CVE-2026-112288.py</code> source</summary>
+<details class="poc-source">
+<summary>Show more — view the full <code>CVE-2026-112288.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
 import socket
