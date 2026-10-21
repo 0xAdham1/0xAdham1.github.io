@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Exploiting a TOCTOU race condition in a SQLite-backed Express session store to bypass balance checks and chain key purchases to get the flag.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="OliCyber — Dependency Hell: Racing SQLite Session Store · 0xAdham">
+  <meta property="og:description" content="Exploiting a TOCTOU race condition in a SQLite-backed Express session store to bypass balance checks and chain key purchases to get the flag.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>OliCyber — Dependency Hell: Racing SQLite Session Store · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">OliCyber — Dependency Hell: Racing SQLite Session Store</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-01-24</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Event:</strong> OliCyber<br />
+<strong>Category:</strong> Web<br />
+<strong>Vulnerability:</strong> TOCTOU in SQLite-backed session management</p>
+<hr />
+<h2>The Vulnerable Logic</h2>
+<p>The app is a key-escalation shop: buy <code>red_key</code> → <code>green_key</code> → <code>blue_key</code> → flag. Each purchase costs 10 coins. You start with 20. You need 40. The math is brutal by design.</p>
+<p>The <code>/buy</code> endpoint looks safe:</p>
+<pre><code class="language-javascript">if (req.session.balance &lt; 10) {
+  res.status(400).json({ error: &quot;Not enough balance&quot; });
+  return;
+}
+// ... validation ...
+req.session.balance -= 10;
+</code></pre>
+<p>Sequential. Logical. Fundamentally broken under concurrency.</p>
+<hr />
+<h2>Why It Breaks</h2>
+<p>The session store is SQLite via <code>connect-sqlite3</code>. SQLite handles concurrency with file-level locking, but <code>express-session</code> defaults to <code>resave: false</code>. The critical gap: <strong>session reads and writes are not atomic</strong>.</p>
+<p>When two requests hit simultaneously:<br />
+1. Both read <code>balance: 20</code><br />
+2. Both pass the check<br />
+3. Both deduct 10<br />
+4. Both write back — result is <code>balance: 10</code> instead of <code>balance: 0</code></p>
+<p>You spent 10 coins, got two purchases worth of keys.</p>
+<hr />
+<h2>The Exploit Architecture</h2>
+<h3>The Healer Swarm</h3>
+<p>40 threads hammering <code>GET /</code>:</p>
+<pre><code class="language-python">def healer():
+    while not stop_healer.is_set():
+        try:
+            session.get(f&quot;{URL}/&quot;, timeout=0.5)
+        except:
+            pass
+</code></pre>
+<p>Why? The initialization middleware:</p>
+<pre><code class="language-javascript">if (req.session.red_key === undefined || ...) {
+  req.session.red_key = crypto.randomBytes(32).toString(&quot;hex&quot;);
+  req.session.balance = 20;
+}
+</code></pre>
+<p>Every time a session is reloaded from SQLite in a race window, if the read is corrupted or the session row is locked, the middleware may trigger re-initialization — resetting balance back to 20. The healers keep session state in constant flux, maximizing collision probability.</p>
+<h3>The Purchase Loop</h3>
+<pre><code class="language-python">def buy_with_retry(item_name, key_value):
+    while True:
+        res = session.post(..., json={&quot;item&quot;: item_name, &quot;key&quot;: key_value})
+        if &quot;item&quot; in data:
+            return data[&quot;item&quot;]
+        elif &quot;Not enough balance&quot; in res.text:
+            time.sleep(0.5)  # Wait for healer to reset balance
+</code></pre>
+<p>The exploit treats "Not enough balance" as a transient lock collision, not a hard failure. When balance runs out, pause — let the healers corrupt the session back into a usable state — retry.</p>
+<hr />
+<h2>The Chain</h2>
+<pre><code>1. Healers saturate server with session reads/writes
+2. Buy red_key   (costs 10, balance races back to 20)
+3. Buy green_key (same race window)
+4. Buy blue_key
+5. Buy flag
+</code></pre>
+<p>The economics don't matter when the ledger is lying.</p>
+<hr />
+<h2>The Fix</h2>
+<p>Minimum viable patch — still not truly atomic:</p>
+<pre><code class="language-javascript">app.post(&quot;/buy&quot;, async (req, res) =&gt; {
+  req.session.reload((err) =&gt; {
+    if (err) { /* handle */ }
+    // fresh read, but still races on deduct
+  });
+});
+</code></pre>
+<p>Real fix: database-level transaction wrapping the entire check-deduct-respond flow, or move balance to Redis with atomic <code>DECR</code> operations.</p>
+<hr />
+<h2>Takeaway</h2>
+<p>SQLite was never meant for high-concurrency session storage. <code>express-session</code>'s read-modify-write pattern assumes the store is atomic or single-threaded. Violate that assumption with 40 concurrent threads and the abstraction leaks catastrophically.</p>
+<p>The "safe" sequential code becomes theater. The real logic is in the timing — the microseconds between SQLite's <code>BEGIN</code> and <code>COMMIT</code>.</p>
+<p>Exploit source: <a href="https://github.com/0xAdham/olicyber">github.com/0xAdham/olicyber</a></p>
+<hr />
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Exploiting a TOCTOU race condition in a SQLite-backed Express session store to bypass balance checks and chain key purchases to get the flag.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-01-24</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

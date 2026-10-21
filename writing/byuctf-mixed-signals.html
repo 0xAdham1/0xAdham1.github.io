@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Two Go binaries: a process that turns 15 OS signals into VM opcodes via signal.Notify, and a driver that sends it 1817 signals. Recover the ISA from the dispatch, scrape the unrolled signal list, and since the VM is straight-line, let z3 hand you the flag.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Mixed Signals · 0xAdham">
+  <meta property="og:description" content="Two Go binaries: a process that turns 15 OS signals into VM opcodes via signal.Notify, and a driver that sends it 1817 signals. Recover the ISA from the dispatch, scrape the unrolled signal list, and since the VM is straight-line, let z3 hand you the flag.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Mixed Signals · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Mixed Signals</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Mixed Signals<br />
+<strong>Category:</strong> Reversing<br />
+<strong>Difficulty:</strong> Hard</p>
+<h2>Flag</h2>
+<p><code>byuctf{l3ft_bl1nk3r_5c9125be}</code></p>
+<h2>Target</h2>
+<p>Folder <code>rev/</code> with two <strong>Go</strong> binaries (debug info, not stripped):</p>
+<ul>
+<li><code>mixed_signals</code>: <code>./mixed_signals &lt;flag&gt;</code>; prints nothing and <strong>hangs</strong> (it blocks on a signal channel and swallows SIGTERM, so <code>timeout</code> can't kill it, so use <code>timeout -s KILL</code>).</li>
+<li><code>program</code>: the <strong>driver</strong>. Has <code>find_vm</code> / <code>run_program</code> / <code>SendSignal</code> / <code>pidfdSendSignal</code>; locates the <code>mixed_signals</code> process via <code>/proc</code> and sends it a long signal sequence.</li>
+</ul>
+<h2>mixed_signals = a signal-driven VM</h2>
+<p><code>main.main</code>: copies <code>os.Args[1]</code> to a 256-byte <strong>tape</strong> at <code>[rsp+0x30]</code>, <code>signal.Notify</code>s <strong>15</strong> signals, inits <code>ptr=0, C=0, D=0</code>, then loops on <code>chanrecv1</code> and dispatches on the received signal number. State: <code>ptr</code> (<code>[rsp+0x140]</code>), regs <code>C</code>/<code>D</code> (<code>[rsp+0x2e]</code>/<code>[rsp+0x2f]</code>), tape = the flag. Terminal: <code>test dl,dl</code> → <code>D==0</code> prints <strong>"Right on!"</strong>, else <strong>"Too bad..."</strong>.</p>
+<p><strong>Opcode table</strong> (recovered from the dispatch):</p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Op</th>
+<th>Signal</th>
+<th>Op</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SIGHUP</td>
+<td><code>ptr++</code></td>
+<td>SIGFPE</td>
+<td><code>tape[ptr]=C</code></td>
+</tr>
+<tr>
+<td>SIGINT</td>
+<td><code>ptr--</code></td>
+<td>SIGUSR1</td>
+<td><code>D+=C</code></td>
+</tr>
+<tr>
+<td>SIGQUIT</td>
+<td><code>D=tape[ptr]</code></td>
+<td>SIGUSR2</td>
+<td><code>D-=C</code></td>
+</tr>
+<tr>
+<td>SIGILL</td>
+<td><code>C=tape[ptr]</code></td>
+<td>SIGPIPE</td>
+<td><code>D^=C</code></td>
+</tr>
+<tr>
+<td>SIGTRAP</td>
+<td><code>D=0</code></td>
+<td>SIGALRM</td>
+<td><code>D\|=C</code></td>
+</tr>
+<tr>
+<td>SIGABRT</td>
+<td><code>C=0</code></td>
+<td><strong>SIGTERM</strong></td>
+<td><strong>escape: recv next sig → <code>D += {HUP:1,INT:5,QUIT:10,ILL:50,TRAP:100}</code></strong></td>
+</tr>
+<tr>
+<td>SIGBUS</td>
+<td><code>tape[ptr]=D</code></td>
+<td>SIGCHLD</td>
+<td><strong>halt: check <code>D==0</code></strong></td>
+</tr>
+</tbody>
+</table>
+<p>SIGTERM's handler does a <em>second</em> <code>chanrecv1</code>, consuming the following signal as a constant selector. That's how arbitrary byte constants get built into <code>D</code>.</p>
+<h2>Extracting the program</h2>
+<p><code>program.run_program</code> is ~11k lines of <strong>unrolled</strong> <code>os.(*Process).Signal(VM, sig)</code> + <code>time.Sleep(10ms)</code> calls. Each call's signal is chosen by <code>lea rcx,[rip+...]#53a2XX</code> pointing at a <code>syscall.Signal</code> constant. Parse <code>(lea rcx → addr)</code> before every <code>Signal</code> call, resolve <code>addr → signal value</code> from <code>program</code>'s data: <strong>1817 signals</strong> total.</p>
+<h2>Solving with z3</h2>
+<p>The VM is <strong>straight-line</strong>: <code>ptr</code> only moves by constant <code>HUP</code>/<code>INT</code>, never data-dependent, so it symbolically executes cleanly. Model each tape cell that's <em>read before written</em> as an 8-bit <code>BitVec</code> (the flag inputs); propagate <code>C</code>/<code>D</code>/tape as z3 expressions through all 1817 ops; assert <code>final D == 0</code>; solve.</p>
+<pre><code class="language-python">import z3
+seq=[int(x) for x in open('seq.txt').read().split()]
+CONST={1:1,2:5,3:10,4:50,5:100}      # HUP,INT,QUIT,ILL,TRAP
+tape={}; inp={}
+def cell(p):
+    if p not in tape:
+        v=z3.BitVec(f&quot;f_{p}&quot;,8); inp[p]=v; tape[p]=v
+    return tape[p]
+ptr=0; C=z3.BitVecVal(0,8); D=z3.BitVecVal(0,8); i=0; finalD=None
+while i&lt;len(seq):
+    s=seq[i]; i+=1
+    if   s==1: ptr+=1
+    elif s==2: ptr-=1
+    elif s==3: D=cell(ptr)
+    elif s==4: C=cell(ptr)
+    elif s==5: D=z3.BitVecVal(0,8)
+    elif s==7: tape[ptr]=D
+    elif s==13: D=D^C
+    elif s==14: D=D|C
+    elif s==15: arg=seq[i]; i+=1; D=D+z3.BitVecVal(CONST.get(arg,100),8)
+    elif s==17: finalD=D
+sol=z3.Solver(); sol.add(finalD==0); sol.check()
+m=sol.model()
+print(bytes(m[inp[p]].as_long() for p in sorted(inp)))   # byuctf{l3ft_bl1nk3r_5c9125be}\x00
+</code></pre>
+<p>Positions 0 to 28 = the flag; cell 29 is the OR-accumulator (solves to 0).</p>
+<h2>Verification</h2>
+<p>Driving the real <code>mixed_signals "byuctf{l3ft_bl1nk3r_5c9125be}"</code> with the 1817-signal sequence at a ~12 ms gap → <strong>"Right on!"</strong>.</p>
+<p>(Note: letting <code>program</code> drive it sometimes yields "Too bad". The 1-deep <code>signal.Notify</code> channel drops coalesced signals at its 10 ms cadence. Sending them yourself with a slightly larger gap is reliable.)</p>
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Go signal-handler obfuscation:</strong> <code>signal.Notify</code> + a <code>chanrecv</code> loop turns OS signals into VM opcodes. Map each registered signal to its dispatch block to recover the ISA. Watch for "escape" opcodes that <code>chanrecv</code> again to read an operand (SIGTERM here).</li>
+<li><strong>Unrolled driver → flat opcode list:</strong> when the program is a giant straight-line sequence of <code>Signal(sig)</code> calls, scrape the constants in order; you don't need to run anything.</li>
+<li><strong>Straight-line VM ⇒ z3.</strong> No data-dependent branches means <code>ptr</code> is concrete; model tape cells as bitvectors, propagate, assert the success condition, and let the solver hand you the flag. Far faster than hand-inverting chained XOR/OR/ADD byte math.</li>
+<li>Validate opcode semantics with tiny live signal sequences before trusting a big symbolic model (empty→"Right on!", <code>+1</code>→"Too bad").</li>
+<li>Self-handled SIGTERM means <code>timeout -s KILL</code> for any dynamic testing.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Two Go binaries: a process that turns 15 OS signals into VM opcodes via signal.Notify, and a driver that sends it 1817 signals. Recover the ISA from the dispatch, scrape the unrolled signal list, and since the VM is straight-line, let z3 hand you the flag.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rev</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">golang</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">signals</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">vm</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">z3</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">symbolic-execution</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

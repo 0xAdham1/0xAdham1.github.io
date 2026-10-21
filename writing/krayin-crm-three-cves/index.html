@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham">
+  <meta property="og:description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> Responsible disclosure</div>
+      <h1 class="page-title">A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-10-19</span>
+        <span>Responsible disclosure · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p>A white-box review of one open-source Laravel CRM, written up for the people who patch<br />
+it and the people who just need to know how bad it was. All three fixed in 2.2.7.</p>
+<ul>
+<li><strong>Author:</strong> Adham · @0xAdham1</li>
+<li><strong>Target:</strong> <code>krayin/laravel-crm</code></li>
+<li><strong>Reported:</strong> 2026-10-05</li>
+<li><strong>Fixed in:</strong> 2.2.7</li>
+<li><strong>CVEs:</strong> 3</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>CVE</th>
+<th>Class</th>
+<th>Severity</th>
+<th>One-liner</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CVE-2026-112286</strong></td>
+<td>IDOR</td>
+<td>High 7.1</td>
+<td>Two Quote read endpoints a prior fix never reached; any restricted agent reads competitors' pricing, addresses and PII with a plain GET.</td>
+</tr>
+<tr>
+<td><strong>CVE-2026-112287</strong></td>
+<td>BOLA</td>
+<td>High 8.3</td>
+<td>Read path says 401, write path says 200 for the same email ID. Trash, bulk-delete, edit and re-send other users' mail.</td>
+</tr>
+<tr>
+<td><strong>CVE-2026-112288</strong></td>
+<td>SSRF · TOCTOU</td>
+<td>Low 3.1</td>
+<td>The SSRF filter resolves the host once and throws it away; the request resolves again. Answer public, then loopback, and you're inside.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h1>CVE-2026-112286</h1>
+<h2>Cross-user data disclosure in Krayin's Quote module</h2>
+<p><code>HIGH · CVSS 4.0 · 7.1</code> · <code>CWE-639</code> · <code>IDOR</code> · <code>incomplete-fix</code></p>
+<h3>TL;DR</h3>
+<ul>
+<li><strong>The bug:</strong> two Quote endpoints never check who owns the record, so a restricted agent reads any user's quotes just by changing a number.</li>
+<li><strong>The impact:</strong> deal pricing, billing and shipping addresses, totals and linked customer emails, across the whole tenant.</li>
+<li><strong>Status:</strong> reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112286.</li>
+</ul>
+<h3>At a glance</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Product</strong></td>
+<td>Krayin CRM (<code>krayin/laravel-crm</code>)</td>
+</tr>
+<tr>
+<td><strong>Component</strong></td>
+<td><code>Quote/QuoteController.php</code></td>
+</tr>
+<tr>
+<td><strong>Class</strong></td>
+<td>IDOR / cross-user read disclosure · CWE-639</td>
+</tr>
+<tr>
+<td><strong>Severity</strong></td>
+<td>High, CVSS 4.0 <strong>7.1</strong> · <code>CVSS:4.0/AV:N/AC:L/AT:N/PR:L/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N</code></td>
+</tr>
+<tr>
+<td><strong>Affected / fixed</strong></td>
+<td><code>&lt; 2.2.7</code>, fixed in <code>2.2.7</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Why this matters</h3>
+<p>Picture a sales team where each rep should only see their own deals. This bug lets any rep<br />
+pull up <strong>everyone's</strong> quotes: what competitors are charging, who the customers are, where<br />
+they're billed. No admin rights, no clever tooling, just a logged-in account and a web<br />
+request. It's a confidentiality leak across every customer in the system.</p>
+<h3>In plain English</h3>
+<p>It's a coat check that hands over any coat to whoever names a number, and the tickets are<br />
+just <em>1, 2, 3…</em> so you can ask for every coat in the room. Here the "ticket" is the<br />
+<code>lead_id</code> in the URL; the attendant (the API) looks it up and hands it back without ever<br />
+checking the coat is yours.</p>
+<h3>Attack flow</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Actor → Endpoint</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Agent → <code>GET /admin/quotes/search?search=</code></td>
+<td>A valid low-privilege agent session, owning no records</td>
+</tr>
+<tr>
+<td>2</td>
+<td>App → Database</td>
+<td><code>SELECT * FROM quotes</code>, never restricted to the agent's authorized IDs</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Database → App</td>
+<td>Every tenant's quotes come back</td>
+</tr>
+<tr>
+<td>4</td>
+<td>App → Agent</td>
+<td><code>200</code> with subjects, billing/shipping addresses, totals and customer PII</td>
+</tr>
+</tbody>
+</table>
+<p>The write path of this controller was locked down months earlier by CVE-2026-61460. The<br />
+read path was never in that report, so it was never touched. That gap is this CVE: a<br />
+textbook <strong>incomplete fix</strong>.</p>
+<h3>Deep dive: root cause and the two endpoints</h3>
+<p>Krayin scopes each user to a set of records via <code>users.view_permission</code><br />
+(<code>global</code>/<code>group</code>/<code>individual</code>), resolved by <code>bouncer()-&gt;getAuthorizedUserIds()</code>. Record<br />
+actions are meant to check the record's <code>user_id</code> against that set. The Quote write methods<br />
+do (<code>preventUnauthorizedAccess()</code>); these two reads don't.</p>
+<p><strong>B1: <code>leadProducts()</code> → <code>GET /admin/quotes/lead-products/{lead_id}</code></strong></p>
+<pre><code class="language-php">// fetch by id only, no ownership check
+$lead = $this-&gt;leadRepository-&gt;findOrFail($leadId);
+return response()-&gt;json(['data' =&gt; $this-&gt;getLeadProductsForQuote($lead)]);
+</code></pre>
+<p>For any <code>lead_id</code>, the caller gets each product's name, quantity, unit price and line<br />
+total, the full pricing of another user's deal.</p>
+<p><strong>B2: <code>search()</code> → <code>GET /admin/quotes/search</code></strong></p>
+<pre><code class="language-php">$quotes = $this-&gt;quoteRepository
+    -&gt;pushCriteria(app(RequestCriteria::class))
+    -&gt;all();  // no data-scope filter
+return QuoteResource::collection($quotes);
+</code></pre>
+<p><code>-&gt;all()</code> applies only the request's search criteria, never a restriction to the caller's<br />
+authorized IDs. <code>QuoteResource</code> then serializes subject, description, billing/shipping<br />
+address, totals, the linked person (customer PII) and related leads, for every user's<br />
+quotes.</p>
+<h3>PoC: walkthrough and captured leak</h3>
+<p>Local instance, Krayin 2.2 branch. Owner (global, ID 1) owns a lead and a quote; Agent<br />
+(individual) owns nothing but holds the Quote feature permission. Both endpoints are GETs,<br />
+so no CSRF token is needed.</p>
+<pre><code class="language-bash">curl -s &quot;$BASE/admin/quotes/lead-products/1&quot; \
+  -H &quot;Cookie: $COOKIE&quot; -H &quot;Accept: application/json&quot; | jq .
+</code></pre>
+<pre><code class="language-json">{ &quot;data&quot;: [ {
+  &quot;product_id&quot;: 1, &quot;name&quot;: &quot;Owner Secret Widget&quot;,
+  &quot;quantity&quot;: 3, &quot;price&quot;: 1234.56, &quot;total&quot;: 3703.68
+} ] }
+</code></pre>
+<p>The agent owns nothing, yet reads Owner's product, quantity and exact pricing. The <code>search</code><br />
+endpoint goes further, returning full <code>QuoteResource</code> objects with billing addresses and the<br />
+customer's email. The published PoC (<code>CVE-2026-112286.py</code>) is read-only and refuses any<br />
+non-local <code>--base</code>.</p>
+<h3>Fix: remediation that shipped in 2.2.7</h3>
+<p>Two additions, both mirroring patterns already in the codebase:</p>
+<pre><code class="language-php">// leadProducts()
+$lead = $this-&gt;leadRepository-&gt;findOrFail($leadId);
+$this-&gt;preventUnauthorizedAccess($lead-&gt;user_id);  // add this
+
+// search(): constrain to the caller's scope before -&gt;all()
+if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
+    $this-&gt;quoteRepository-&gt;whereIn('user_id', $userIds);
+}
+</code></pre>
+<p>CVE-2026-61460 fixed object-level authorization on the write path of this controller and<br />
+four siblings. This finding is the same bug class on the two read endpoints that fix never<br />
+reached, reported so the Quote-module fix could actually be completed.</p>
+<h3>Timeline</h3>
+<ul>
+<li><strong>2026-10-04:</strong> Found during a white-box review of the 2.2 branch</li>
+<li><strong>2026-10-05:</strong> Reported to the vendor with advisory + PoC</li>
+<li><strong>2026-10-09:</strong> Confirmed in a local lab</li>
+<li><strong>2026-10-19:</strong> CVE-2026-112286 published, fixed in 2.2.7</li>
+</ul>
+<h3>Takeaways</h3>
+<ul>
+<li><strong>Hunter:</strong> when a vendor patches an auth bug, check the <em>read</em> endpoints of the same controller; fixes track reports, not bug classes.</li>
+<li><strong>Dev:</strong> a collection endpoint needs the same scope filter as the DataGrid that lists it. <code>-&gt;all()</code> with only search criteria is a leak.</li>
+</ul>
+<hr />
+<h1>CVE-2026-112287</h1>
+<h2>Broken Object Level Authorization in the Mail module</h2>
+<p><code>HIGH · CVSS 8.3</code> · <code>CWE-639</code> · <code>BOLA</code></p>
+<h3>TL;DR</h3>
+<ul>
+<li><strong>The bug:</strong> the Mail module checks ownership when you <em>read</em> an email but not when you <em>modify or delete</em> one.</li>
+<li><strong>The impact:</strong> a low-privilege agent can trash, bulk-delete, edit and re-send other users' emails, and the edit response leaks the thread's contents too.</li>
+<li><strong>Status:</strong> reported 2026-10-05, fixed in 2.2.7, published as CVE-2026-112287.</li>
+</ul>
+<h3>At a glance</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Product</strong></td>
+<td>Krayin CRM (<code>krayin/laravel-crm</code>)</td>
+</tr>
+<tr>
+<td><strong>Component</strong></td>
+<td><code>Mail/EmailController.php</code></td>
+</tr>
+<tr>
+<td><strong>Class</strong></td>
+<td>BOLA on the write path · CWE-639</td>
+</tr>
+<tr>
+<td><strong>Severity</strong></td>
+<td>High, CVSS 3.1 <strong>8.3</strong> · <code>AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:H/A:H</code></td>
+</tr>
+<tr>
+<td><strong>Affected / fixed</strong></td>
+<td><code>&lt; 2.2.7</code>, fixed in <code>2.2.7</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Why this matters</h3>
+<p>Email threads in a CRM are the record of a customer relationship. This bug lets one sales<br />
+agent quietly <strong>destroy another agent's correspondence</strong>, individually or in bulk, and<br />
+tamper with records they're not even allowed to open. It can also flip a draft into the<br />
+outbox and send mail on someone else's thread. That's damage to data integrity and<br />
+availability, with a side of data leakage.</p>
+<h3>In plain English</h3>
+<p>Think of a room with two doors. The front door has a lock that checks your badge: try to<br />
+<em>read</em> the mail and it says "not yours, 401." The back door, the one for deleting and<br />
+editing, was never fitted with a lock at all. Same room, same mail; one door guards it and<br />
+the other waves you straight through.</p>
+<h3>Attack flow</h3>
+<p>As the restricted (individual-scope) agent, against an email owned by another user:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Request</th>
+<th>Response</th>
+<th>What it proves</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>GET /admin/mail/inbox/1</code></td>
+<td><code>401 Unauthorized</code></td>
+<td>read is gated</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>DELETE /admin/mail/1</code> (<code>type=trash</code>)</td>
+<td><code>200 "deleted"</code></td>
+<td>write is <strong>not</strong> gated</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>GET /admin/mail/trash/1</code></td>
+<td><code>401 Unauthorized</code></td>
+<td>still can't view the email it just trashed</td>
+</tr>
+</tbody>
+</table>
+<p>That contradiction, the same ID returns <code>401</code> on read and <code>200</code> on delete, is the entire<br />
+vulnerability, provable in two requests.</p>
+<h3>Deep dive: root cause and affected endpoints</h3>
+<p>The read path resolves the record's owner and enforces scope. <code>view()</code>:</p>
+<pre><code class="language-php">if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
+    $ownerIds = array_filter([$email-&gt;lead?-&gt;user_id, $email-&gt;person?-&gt;user_id]);
+    if ($ownerIds &amp;&amp; empty(array_intersect($ownerIds, $userIds))) {
+        abort(401, trans('admin::app.errors.unauthorized'));
+    }
+}
+</code></pre>
+<p>None of the four mutating actions do this. Three things make it exploitable rather than<br />
+theoretical: the guard is simply <strong>absent</strong> (not weakened); the route ACL is only<br />
+<em>feature</em>-level ("may this user use mail"), which every agent passes; and <code>update()</code> reads<br />
+<code>request('id') ?? $id</code>, so a body ID overrides the URL, making it a disclosure primitive<br />
+too.</p>
+<table>
+<thead>
+<tr>
+<th>Route</th>
+<th>Missing guard</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PUT /admin/mail/edit/{id}</code></td>
+<td><code>preventUnauthorizedAccess</code></td>
+</tr>
+<tr>
+<td><code>DELETE /admin/mail/{id}</code></td>
+<td><code>preventUnauthorizedAccess</code></td>
+</tr>
+<tr>
+<td><code>POST /admin/mail/mass-update</code></td>
+<td><code>filterAuthorizedRecords</code></td>
+</tr>
+<tr>
+<td><code>POST /admin/mail/mass-destroy</code></td>
+<td><code>filterAuthorizedRecords</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every sibling module (Person, Organization, Quote, Activity) routes its bulk operations<br />
+through <code>filterAuthorizedRecords()</code>. Mail is the one that skipped the ownership filter on the<br />
+delete and modify path.</p>
+<h3>PoC: trash, bulk-delete and the disclosure write</h3>
+<p>The PoC only ever drives reversible paths (<code>type=trash</code>, <code>is_read</code>) and refuses a non-local<br />
+base. Step 1 trashes Owner's email that step 0 just proved the agent can't read:</p>
+<pre><code class="language-bash">curl -s -X DELETE &quot;$BASE/admin/mail/1&quot; \
+  -H &quot;Cookie: $COOKIE&quot; -H &quot;X-XSRF-TOKEN: $XSRF&quot; \
+  --data-urlencode &quot;type=trash&quot;
+# HTTP 200 { &quot;message&quot;: &quot;Email deleted successfully.&quot; }
+</code></pre>
+<p>Flipping <code>is_read</code> via <code>update()</code> returns the full <code>EmailResource</code>, so the same request that<br />
+tampers also leaks:</p>
+<pre><code class="language-json">{ &quot;id&quot;:1, &quot;subject&quot;:&quot;Owner private email&quot;,
+  &quot;reply&quot;:&quot;secret body&quot;, &quot;is_read&quot;:1,
+  &quot;person&quot;:[ {&quot;value&quot;:&quot;cust@owner.example&quot;} ] }
+</code></pre>
+<blockquote>
+<p>Only ever send <code>type=trash</code> while testing. Any other value hard-deletes.</p>
+</blockquote>
+<h3>Fix: remediation and why it's a distinct CVE</h3>
+<p>Apply the ownership gate the read path already uses to every mutating action:</p>
+<pre><code class="language-php">$email = $this-&gt;emailRepository-&gt;findOrFail($id);
+$this-&gt;preventUnauthorizedAccess(array_filter([
+    $email-&gt;lead?-&gt;user_id,
+    $email-&gt;person?-&gt;user_id,
+]));
+</code></pre>
+<p>Route the bulk IDs through <code>filterAuthorizedRecords()</code>, and drop the <code>request('id') ?? $id</code><br />
+fallback so the path is authoritative. Shipped in 2.2.7. Krayin has a run of prior BOLA/IDOR<br />
+CVEs (LeadController, PersonController, the attachment download path, the v2.2.6 ACL mapping<br />
+fix), none covered the mutating actions of <code>EmailController</code>.</p>
+<h3>Timeline</h3>
+<ul>
+<li><strong>2026-10-04:</strong> Found during a white-box review of the 2.2 branch</li>
+<li><strong>2026-10-05:</strong> Reported to the vendor with advisory + PoC</li>
+<li><strong>2026-10-09:</strong> Confirmed in a local lab</li>
+<li><strong>2026-10-19:</strong> CVE-2026-112287 published, fixed in 2.2.7</li>
+</ul>
+<h3>Takeaways</h3>
+<ul>
+<li><strong>Hunter:</strong> a read-side 401 next to a write-side 200 on the same ID is the cleanest BOLA proof there is. Always test the mutating verbs separately.</li>
+<li><strong>Dev:</strong> feature-level ACL is not object-level authorization. If reads check ownership, every write on the same object must too.</li>
+</ul>
+<hr />
+<h1>CVE-2026-112288</h1>
+<h2>Bypassing the webhook SSRF filter with DNS rebinding</h2>
+<p><code>LOW · CVSS 3.1</code> · <code>CWE-918</code> · <code>CWE-367</code> · <code>TOCTOU</code></p>
+<h3>TL;DR</h3>
+<ul>
+<li><strong>The bug:</strong> the webhook SSRF guard resolves the target host once to check it's safe, then the HTTP client resolves it <em>again</em> to connect.</li>
+<li><strong>The impact:</strong> control the DNS and you answer "public, safe" to the check and <code>127.0.0.1</code> / cloud-metadata to the request, reaching inside the network.</li>
+<li><strong>Status:</strong> a bypass of the fix for CVE-2026-38527; fixed properly in 2.2.7.</li>
+</ul>
+<h3>At a glance</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Product</strong></td>
+<td>Krayin CRM (<code>krayin/laravel-crm</code>)</td>
+</tr>
+<tr>
+<td><strong>Component</strong></td>
+<td><code>WebhookService::isSafeEndpoint()</code></td>
+</tr>
+<tr>
+<td><strong>Class</strong></td>
+<td>SSRF via DNS rebinding (resolve-then-request TOCTOU) · CWE-918 / CWE-367</td>
+</tr>
+<tr>
+<td><strong>Severity</strong></td>
+<td>Low, CVSS 3.1 <strong>3.1</strong> · <code>AV:N/AC:H/PR:L/UI:N/S:U/C:L/I:N/A:N</code></td>
+</tr>
+<tr>
+<td><strong>Affected / fixed</strong></td>
+<td><code>&gt;= 2.2.5, &lt; 2.2.7</code>, fixed in <code>2.2.7</code></td>
+</tr>
+</tbody>
+</table>
+<h3>Why this matters</h3>
+<p>Krayin can fire a webhook from a workflow: the server itself makes an outbound HTTP<br />
+request. There's a filter whose whole job is to stop that request from reaching the<br />
+company's own internal systems (like the cloud-metadata service that holds credentials).<br />
+This finding <strong>walks straight past that filter</strong>, so an ordinary authenticated user can make<br />
+the server knock on internal doors it was never meant to touch.</p>
+<h3>In plain English</h3>
+<p>Security at the gate asks for the visitor's name and checks their ID: looks fine, public<br />
+address, let them in. But by the time the visitor actually walks through the door, a<br />
+<em>different</em> person is wearing that name tag. The "name" is the hostname; the ID check is the<br />
+DNS lookup the guard does; the walk-in is the second DNS lookup the HTTP client does a moment<br />
+later. The attacker controls what each lookup returns.</p>
+<h3>Attack flow</h3>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Phase</th>
+<th><code>rebind.test</code> resolves to</th>
+<th>Outcome</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>isSafeEndpoint()</code> check (T0)</td>
+<td><code>93.184.216.34</code> (public)</td>
+<td>passes the filter, "safe"</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Guzzle request (T1)</td>
+<td><code>127.0.0.1</code> / <code>169.254.169.254</code> (answer #2)</td>
+<td>connects to the internal target</td>
+</tr>
+<tr>
+<td>3</td>
+<td>—</td>
+<td>—</td>
+<td>SSRF, the guard is bypassed (TOCTOU)</td>
+</tr>
+</tbody>
+</table>
+<p>The IP validated at T0 is simply discarded; Guzzle re-resolves at T1 and connects to<br />
+whatever it gets. Set a zero TTL so the second lookup isn't cached. You don't strictly need<br />
+rebinding either; plain round-robin DNS mixing a public and a private answer defeats the<br />
+guard non-deterministically.</p>
+<h3>Deep dive: the TOCTOU, and what the guard <em>does</em> get right</h3>
+<pre><code class="language-php">// isSafeEndpoint(): validate
+foreach ($ips as $ip) {
+    if (! filter_var($ip, FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        return false;  // validated at time T0
+    }
+}
+return true;
+
+// ...later, triggerWebhook(): use
+$response = $this-&gt;client-&gt;request($method, $data['end_point'], $options);
+//                           ^ Guzzle re-resolves the HOST at T1 (&gt; T0)
+</code></pre>
+<p><strong>Scope it honestly, the guard isn't useless.</strong> It re-checks inside the <code>on_redirect</code><br />
+handler, so the redirect-based pivot is closed; and decimal/octal IP literals fail<br />
+validation. The one unpinned path is the <em>initial</em> request's re-resolution. There's also a<br />
+secondary gap: <code>FILTER_FLAG_NO_RES_RANGE</code> doesn't reliably flag IPv4-mapped IPv6<br />
+(<code>::ffff:169.254.169.254</code>), which can pass and still connect on a dual-stack host.</p>
+<p><strong>This is blind SSRF.</strong> <code>triggerWebhook()</code> discards the response body, so there's no<br />
+reflected read: exfiltration needs an internal service that acts on the request alone, or an<br />
+oracle. That's why it's Low (3.1, <code>AC:H</code>, blind), not a straight critical metadata read.</p>
+<h3>PoC: loopback rebinding harness</h3>
+<p>The whole chain runs on loopback: a rebinding DNS server on <code>127.0.0.1:5353</code> that answers<br />
+public on query #1 and <code>127.0.0.1</code> on every query after (TTL 0), plus a loopback listener<br />
+standing in for the internal service. Driving the repo's unmodified <code>isSafeEndpoint()</code> with<br />
+the real client options:</p>
+<pre><code class="language-text">isSafeEndpoint('http://rebind.test/') =&gt; true
+  -&gt; filter said SAFE (it resolved the PUBLIC answer)
+
+HTTP 200   body: INTERNAL-SECRET-RESPONSE
+&gt;&gt;&gt; Guzzle connected to the LOOPBACK target (127.0.0.1) &lt;&lt;&lt;
+
+[dns] A query #1 for rebind.test -&gt; 93.184.216.34
+[dns] A query #2 for rebind.test -&gt; 127.0.0.1
+</code></pre>
+<p>The guard said "public, safe" and the request still hit <code>127.0.0.1</code>. That's the whole bug in<br />
+one trace.</p>
+<h3>Fix: pin the connection to the validated IP</h3>
+<p>The root cause is the second resolution, so pin the connection to the IP the guard<br />
+validated:</p>
+<ul>
+<li>Resolve <strong>once</strong>, validate every A/AAAA address, then force the client to connect to that exact IP (Guzzle's <code>CURLOPT_RESOLVE</code>) while keeping the <code>Host</code> header. Reject answer-sets that mix ranges.</li>
+<li>Apply the same pin inside <code>on_redirect</code>: resolve and pin the target, don't just re-validate the hostname.</li>
+<li>Normalize IPv4-mapped IPv6 before the range check and reject <code>::ffff:*</code> into private space. Consider an allowlist on top of the denylist.</li>
+</ul>
+<p>2.2.7 pins the request to the validated IP. CVE-2026-38527 was the original unguarded SSRF;<br />
+the vendor fixed it by adding this guard. This finding shows the guard is bypassable, so it<br />
+gets its own ID: an incomplete-fix of a security control.</p>
+<h3>Timeline</h3>
+<ul>
+<li><strong>2026-10-04:</strong> Found during a white-box review of the 2.2 branch</li>
+<li><strong>2026-10-05:</strong> Reported with advisory + local rebinding harness</li>
+<li><strong>2026-10-09:</strong> Confirmed with the repo's unmodified guard + real client options</li>
+<li><strong>2026-10-19:</strong> CVE-2026-112288 published, fixed in 2.2.7</li>
+</ul>
+<h3>Takeaways</h3>
+<ul>
+<li><strong>Hunter:</strong> any "resolve, validate, then request" flow is a TOCTOU candidate. If the check and the use resolve DNS separately, rebinding wins.</li>
+<li><strong>Dev:</strong> validating a hostname's IP and then connecting by hostname pins nothing. Connect to the exact IP you validated, not the name.</li>
+</ul>
+<hr />
+<p><em>CTF player and bug bounty hunter on HackerOne / Bugcrowd. All three findings were reported<br />
+to the vendor before publication and are fixed in Krayin 2.2.7. PoC scripts are read-only or<br />
+reversible and refuse non-local targets. Test only against systems you own or are authorised<br />
+to assess.</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-10-19</div>
+            <div><strong style="color:var(--ink)">Category:</strong> Responsible disclosure</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">krayin</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">laravel</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">idor</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">bola</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ssrf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">dns-rebinding</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">cve</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">appsec</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

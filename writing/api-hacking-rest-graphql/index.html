@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A simple, beginner friendly guide to how REST and GraphQL APIs get hacked, how to test them, how defenders fix the bugs, and where to practice legally.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="API Hacking for Beginners: Breaking REST and GraphQL · 0xAdham">
+  <meta property="og:description" content="A simple, beginner friendly guide to how REST and GraphQL APIs get hacked, how to test them, how defenders fix the bugs, and where to practice legally.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>API Hacking for Beginners: Breaking REST and GraphQL · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> Bug bounty</div>
+      <h1 class="page-title">API Hacking for Beginners: Breaking REST and GraphQL</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>Oct 07, 2026</span>
+        <span>Bug bounty · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <h1>API Hacking for Beginners: Breaking REST and GraphQL</h1>
+<h2>What is an API, and why do hackers love them?</h2>
+<p>An API (Application Programming Interface) is how one program talks to another. When you open a food delivery app and see restaurants near you, the app is not doing that work itself. It quietly sends a request to a server, the server answers with data, and the app paints that data on your screen. That whole conversation runs over APIs.</p>
+<p>Think of an API as a waiter in a restaurant. You do not walk into the kitchen and cook. You tell the waiter what you want, the waiter carries your order to the kitchen, and brings back a plate. The API is the waiter. Your app is you. The database is the kitchen.</p>
+<p>So why are APIs such a favorite target?</p>
+<ol>
+<li>They sit between the app and the real data, so a single weak endpoint can leak thousands of records.</li>
+<li>Developers often protect the pretty frontend and forget that the API underneath is wide open.</li>
+<li>Mobile apps, web apps, and partners all hit the same API, so one bug affects a lot of surface at once.</li>
+<li>APIs are predictable. Once you learn the common patterns, you start spotting the same bugs everywhere.</li>
+</ol>
+<p>This guide walks through the two kinds of APIs you will meet most: REST and GraphQL. We will keep it simple, explain each bug in plain language with a tiny example, and finish with how defenders fix them and where you can practice legally. Everything here is for learning and authorized testing only. Never touch a system you do not own or do not have written permission to test.</p>
+<h2>REST APIs in five minutes</h2>
+<p>REST is the most common API style on the web. The idea is simple: everything is a resource, and every resource has a URL. A user, an order, a photo, a comment, each one is a thing you can reach at an address.</p>
+<p>A REST request has four parts worth knowing:</p>
+<ol>
+<li>The method (the verb): GET to read, POST to create, PUT or PATCH to update, DELETE to remove.</li>
+<li>The endpoint (the URL): the address of the resource, like <code>/api/users/23</code>.</li>
+<li>Headers: extra info, including your auth token that proves who you are.</li>
+<li>The body: the data you send, usually JSON, mostly on POST and PUT.</li>
+</ol>
+<p>Here is what a real request and response look like. A user asking for their own profile:</p>
+<pre><code class="language-http">GET /api/users/23 HTTP/1.1
+Host: shop.example.com
+Authorization: Bearer eyJhbGciOiJIUzI1...
+</code></pre>
+<p>And the server answers:</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: 23,
+  &quot;name&quot;: &quot;Layla&quot;,
+  &quot;email&quot;: &quot;layla@example.com&quot;,
+  &quot;role&quot;: &quot;customer&quot;
+}
+</code></pre>
+<p>A few terms you will see constantly:</p>
+<ul>
+<li>Status codes tell you what happened. 200 means OK, 201 means created, 401 means not logged in, 403 means logged in but not allowed, 404 means not found, 500 means the server broke.</li>
+<li>A token (often a JWT or a session cookie) is how the API remembers who you are across requests.</li>
+<li>An ID is the number or string that points to one specific resource, like the <code>23</code> above.</li>
+</ul>
+<p>That <code>23</code> is the first thing a hacker notices. If it is your profile at <code>/api/users/23</code>, what happens when you ask for <code>/api/users/24</code>? Hold that thought, because it is the single most common API bug in the world.</p>
+<h2>The bugs that live in REST APIs</h2>
+<p>Most REST findings come from the same short list. Learn these seven and you can test almost any API.</p>
+<h3>Bug 1: BOLA, also called IDOR (the king of API bugs)</h3>
+<p>BOLA means Broken Object Level Authorization. In plain words: the API checks that you are logged in, but forgets to check that the thing you are asking for actually belongs to you.</p>
+<p>You saw it already. Your profile is <code>/api/users/23</code>. You change the number to <code>24</code> and the server happily returns someone else's data. Same trick on <code>/api/orders/1001</code>, <code>/api/invoices/55</code>, <code>/api/messages/9</code>. If you can read or change an object that is not yours by swapping an ID, that is BOLA.</p>
+<p>Why it is so common: the ID is right there in the URL, and authorization checks are easy to forget. This single bug class is behind a huge share of real API breaches.</p>
+<h3>Bug 2: Broken authentication</h3>
+<p>This is about how the API proves who you are, and all the ways that can go wrong:</p>
+<ul>
+<li>Weak or missing password rules, so you can brute force logins.</li>
+<li>Tokens that never expire, or that can be guessed or reused.</li>
+<li>JWTs accepted with no signature check, or with the <code>alg</code> set to <code>none</code>.</li>
+<li>Password reset flows that leak a token or let you reset someone else's account.</li>
+</ul>
+<p>If the lock on the front door is weak, nothing else matters.</p>
+<h3>Bug 3: Excessive data exposure</h3>
+<p>The API sends back more than the screen shows. The app might only display a name, but the JSON response also contains the email, phone, address, and password hash. The frontend hides the extra fields, the API hands them over anyway.</p>
+<p>Always read the raw response, not the pretty page. The interesting data is often sitting there in plain sight.</p>
+<pre><code class="language-json">{
+  &quot;id&quot;: 23,
+  &quot;name&quot;: &quot;Layla&quot;,
+  &quot;email&quot;: &quot;layla@example.com&quot;,
+  &quot;password_hash&quot;: &quot;$2b$12$9f...&quot;,
+  &quot;is_admin&quot;: false
+}
+</code></pre>
+<h3>Bug 4: Mass assignment</h3>
+<p>The API lets you send fields you were never supposed to touch, and it trusts them. You register an account and the API accepts whatever JSON you send. So you add one extra line:</p>
+<pre><code class="language-json">{
+  &quot;username&quot;: &quot;layla&quot;,
+  &quot;password&quot;: &quot;StrongPass1&quot;,
+  &quot;is_admin&quot;: true
+}
+</code></pre>
+<p>If the server blindly saves every field, you just made yourself an admin. The same trick can flip <code>"verified": true</code>, change a <code>"balance"</code>, or set a <code>"role"</code>.</p>
+<h3>Bug 5: Broken function level authorization (BFLA)</h3>
+<p>BOLA is about objects. BFLA is about actions. Here the API fails to check that you are allowed to use a whole function, usually an admin one. A normal user finds the admin route and just calls it:</p>
+<pre><code class="language-http">DELETE /api/admin/users/23 HTTP/1.1
+Host: shop.example.com
+Authorization: Bearer &lt;normal-user-token&gt;
+</code></pre>
+<p>If a regular account can hit admin endpoints or use admin methods, that is BFLA. Hidden in the app does not mean protected on the server.</p>
+<h3>Bug 6: Injection</h3>
+<p>The API takes your input and drops it straight into a database query, a command, or another system without cleaning it. Classic SQL injection still shows up in APIs through JSON bodies and query parameters:</p>
+<pre><code class="language-json">{ &quot;search&quot;: &quot;laptop' OR '1'='1&quot; }
+</code></pre>
+<p>If that changes how many results come back, the input is reaching the database raw. The same family includes NoSQL injection, command injection, and more.</p>
+<h3>Bug 7: No rate limiting</h3>
+<p>The API does not cap how many requests you can send. That opens the door to brute forcing passwords, guessing one time codes, scraping every record by looping through IDs, and simple denial of service. A login that accepts ten thousand attempts a minute has no rate limiting.</p>
+<h2>How to actually test a REST API</h2>
+<p>You do not need to memorize a hundred tricks. Follow a simple loop and let the API tell you where it is weak.</p>
+<ol>
+<li>Map the attack surface. Find the endpoints. Read the API docs if they exist, watch the traffic your browser or the mobile app makes, and look for a Swagger or OpenAPI file at paths like <code>/swagger.json</code>, <code>/openapi.json</code>, or <code>/api/docs</code>. Every endpoint is a door to try.</li>
+<li>Understand normal first. Log in as a regular user and use the app the way it is meant to be used. Capture those clean requests. You cannot spot weird until you know normal.</li>
+<li>Test authorization. This is where the money is. Make two accounts, user A and user B. Log in as A, then try to read and change B's objects by swapping IDs. That is how you find BOLA. Try admin routes with a normal token to find BFLA.</li>
+<li>Test authentication. Remove the token and resend the request. Change or tamper with the JWT. Try an expired token. See what still works without proper auth.</li>
+<li>Test the input. Add fields that should not exist (mass assignment). Put injection payloads in search boxes, filters, and JSON values. Send the wrong type, a huge value, or an empty value and watch the errors.</li>
+<li>Read every response fully. Look for extra fields, internal IDs, stack traces, and debug data. The response body is a confession.</li>
+</ol>
+<p>A starter toolkit, all free to learn with:</p>
+<ul>
+<li>Burp Suite (Community edition): the standard proxy. It sits between you and the API so you can see, pause, and edit every request. Repeater lets you resend and tweak one request, Intruder helps you loop through IDs and values.</li>
+<li>Postman or Insomnia: great for sending and organizing API requests by hand while you learn how each endpoint behaves.</li>
+<li>ffuf or dirsearch: for finding hidden endpoints and paths by fuzzing.</li>
+<li>mitmproxy: a lightweight proxy, handy for capturing mobile app traffic.</li>
+<li>jq and curl: for poking at JSON APIs straight from the terminal.</li>
+</ul>
+<p>If you learn only one habit, make it the two account BOLA test. It finds real, serious bugs faster than anything else.</p>
+<h2>GraphQL in five minutes</h2>
+<p>GraphQL is a different style of API. Instead of many URLs, there is usually just one endpoint, often <code>/graphql</code>. You send a query that describes exactly the data you want, and you get back exactly that shape, nothing more, nothing less.</p>
+<p>With REST you visit different addresses for different things. With GraphQL you visit one address and ask a detailed question.</p>
+<p>There are three kinds of operations:</p>
+<ul>
+<li>Query: read data.</li>
+<li>Mutation: change data (create, update, delete).</li>
+<li>Subscription: live updates over a stream.</li>
+</ul>
+<p>A query looks like this. You ask for a user and pick the fields you want:</p>
+<pre><code class="language-graphql">query {
+  user(id: 23) {
+    name
+    email
+    orders {
+      id
+      total
+    }
+  }
+}
+</code></pre>
+<p>And you get back the same shape as JSON:</p>
+<pre><code class="language-json">{
+  &quot;data&quot;: {
+    &quot;user&quot;: {
+      &quot;name&quot;: &quot;Layla&quot;,
+      &quot;email&quot;: &quot;layla@example.com&quot;,
+      &quot;orders&quot;: [{ &quot;id&quot;: 1001, &quot;total&quot;: 59.0 }]
+    }
+  }
+}
+</code></pre>
+<p>Changing data uses a mutation:</p>
+<pre><code class="language-graphql">mutation {
+  updateUser(id: 23, role: &quot;admin&quot;) {
+    id
+    role
+  }
+}
+</code></pre>
+<p>Here is the key idea for a hacker. GraphQL is powerful and flexible by design. The client gets to ask for whatever it wants, in any combination, as deep as it likes. That flexibility is exactly what creates new ways to attack it. And because it is one endpoint handling many operations, teams often apply security in one place and miss the rest.</p>
+<h2>The bugs that live in GraphQL</h2>
+<p>GraphQL has its own flavor of problems on top of the usual ones. Here are the big ones.</p>
+<h3>Bug 1: Introspection left on</h3>
+<p>GraphQL can describe itself. There is a built in feature called introspection that returns the entire schema: every type, every query, every mutation, every field, every argument. It is meant for developers, but if it is left enabled in production, it hands an attacker the full map of the API.</p>
+<p>You ask the API to describe itself with a special query:</p>
+<pre><code class="language-graphql">query {
+  __schema {
+    types {
+      name
+      fields { name }
+    }
+  }
+}
+</code></pre>
+<p>If that returns a giant schema, you now know every operation that exists, including the hidden admin ones. This is usually your first move against a GraphQL target.</p>
+<h3>Bug 2: Broken authorization</h3>
+<p>Just like BOLA and BFLA in REST, GraphQL often forgets to check whether you are allowed to touch a field or run an operation. The schema might expose an <code>adminDeleteUser</code> mutation, or let you query <code>user(id: 24)</code> for an account that is not yours. Flexibility makes this worse, because one query can reach deep through related objects, and the check is often missing on the nested path.</p>
+<h3>Bug 3: Batching and brute force</h3>
+<p>GraphQL lets you send many operations in one request. That is convenient, and it is also a way around weak rate limiting. If a login only limits requests, you can pack many login attempts into a single request using aliases:</p>
+<pre><code class="language-graphql">mutation {
+  a: login(user: &quot;admin&quot;, pass: &quot;123456&quot;) { token }
+  b: login(user: &quot;admin&quot;, pass: &quot;password&quot;) { token }
+  c: login(user: &quot;admin&quot;, pass: &quot;qwerty&quot;) { token }
+}
+</code></pre>
+<p>One request, many guesses. The same idea speeds up brute forcing one time codes and tokens.</p>
+<h3>Bug 4: Deeply nested query denial of service</h3>
+<p>Because objects relate to each other, you can write a query that loops through relationships again and again, forcing the server to do enormous work from one small request. A thread has an author, the author has posts, each post has a thread, and so on, nested many levels deep. Without query depth or cost limits, a single query can knock the server over.</p>
+<h3>Bug 5: Injection, still</h3>
+<p>GraphQL is just a layer in front of your data. Whatever arguments you pass can still flow into a database or a system command underneath. SQL and NoSQL injection live happily inside GraphQL arguments, so the field values deserve the same testing you would do in REST.</p>
+<h3>Bug 6: Information leakage in errors</h3>
+<p>GraphQL error messages are often chatty. A wrong field name can make the server suggest the correct one. Verbose errors leak internal field names, types, and sometimes stack traces, which quietly rebuilds the schema for you even when introspection is switched off.</p>
+<h2>How to actually test a GraphQL API</h2>
+<p>The loop is similar to REST, with a couple of GraphQL specific first steps.</p>
+<ol>
+<li>Find the endpoint. Look for <code>/graphql</code>, <code>/graphiql</code>, <code>/api/graphql</code>, <code>/v1/graphql</code>, or <code>/query</code>. Watch the app traffic for a POST request carrying a <code>query</code> field in JSON.</li>
+<li>Run introspection. Send the introspection query. If it works, pull the whole schema and read it like a treasure map. Look for mutations and fields that sound sensitive: anything with admin, internal, delete, reset, token, or role in the name.</li>
+<li>Map the schema even if introspection is off. Use clever error messages and a tool that guesses field names to rebuild the schema piece by piece.</li>
+<li>Test authorization. Same two account method as REST. Query objects that are not yours by changing IDs. Try the sensitive mutations you found with a low privilege token.</li>
+<li>Abuse the flexible queries. Try batching with aliases against login and code checks. Try a deeply nested query to probe for missing depth or cost limits. Always in a lab or with permission, since these can degrade a server.</li>
+<li>Test the arguments. Treat every argument as an input field. Put injection payloads in there and read the errors carefully.</li>
+</ol>
+<p>A GraphQL focused toolkit:</p>
+<ul>
+<li>GraphiQL and Apollo Sandbox: in browser explorers that autocomplete the schema once you have introspection. Perfect for learning what the API can do.</li>
+<li>InQL: a Burp Suite extension that parses a GraphQL schema and generates queries for you.</li>
+<li>GraphW00f: fingerprints which GraphQL engine the server runs, which hints at engine specific quirks.</li>
+<li>Clairvoyance: rebuilds the schema even when introspection is disabled, by mining error messages.</li>
+<li>Burp Suite: still your main proxy for intercepting, editing, and replaying the POST requests.</li>
+</ul>
+<p>First three moves on any GraphQL target: find the endpoint, run introspection, read the schema for anything that smells like admin. That alone uncovers a surprising number of real issues.</p>
+<h2>The other side: how defenders fix this</h2>
+<p>Knowing the fix makes you a sharper tester, because you learn to spot what is missing. The patterns are refreshingly consistent:</p>
+<ul>
+<li>Check ownership on every object. For every request, confirm the logged in user actually owns or is allowed to see the thing they asked for. This closes BOLA. Never trust an ID just because it arrived in the request.</li>
+<li>Check permission on every function. Enforce roles on the server for every sensitive action, not just by hiding buttons in the UI. This closes BFLA.</li>
+<li>Return only what is needed. Define the exact fields each response should contain, so secrets and internal flags never leak. This closes excessive data exposure.</li>
+<li>Accept only expected fields. Use an allow list for what a request can set, so no one can slip in <code>is_admin</code> or <code>role</code>. This closes mass assignment.</li>
+<li>Validate and parameterize all input. Use parameterized queries and strict input validation so user data can never become code. This closes injection.</li>
+<li>Rate limit everything. Cap attempts on logins, codes, and expensive endpoints. This closes brute force and a lot of denial of service.</li>
+<li>For GraphQL specifically: turn off introspection in production, add query depth and cost limits, disable aliased batching where it is not needed, and keep error messages generic.</li>
+</ul>
+<p>Notice the theme. Almost every API bug is a missing check on the server. The server must never assume the client is honest.</p>
+<h2>Where to practice (legally) and keep learning</h2>
+<p>The one rule that matters: only test systems you own or are explicitly authorized to test. Everything below gives you a safe, legal playground.</p>
+<p>Hands on labs:</p>
+<ul>
+<li>PortSwigger Web Security Academy: free, excellent, browser based labs covering API testing, access control, and injection. The best place to start.</li>
+<li>OWASP crAPI: a deliberately vulnerable API you run yourself, built to teach exactly these REST bugs.</li>
+<li>VAmPI: a small vulnerable REST API, great for a first BOLA and mass assignment hunt.</li>
+<li>Damn Vulnerable GraphQL Application (DVGA): a vulnerable GraphQL app that walks you through introspection, batching, and injection.</li>
+<li>HackTheBox and TryHackMe: guided rooms and machines, several focused on APIs.</li>
+</ul>
+<p>Reading and reference:</p>
+<ul>
+<li>OWASP API Security Top 10: the official list of the biggest API risks. Read it once, then reread it after a few labs and it will click.</li>
+<li>Public bug bounty reports on HackerOne: real API bugs explained by the people who found them. Pattern recognition gold.</li>
+</ul>
+<p>A sensible path: do the PortSwigger access control and API labs, spin up crAPI and find every bug in it, then do DVGA for the GraphQL side. After that, read real bug bounty reports and try to reproduce the thinking.</p>
+<p>One last reminder. These skills are valuable because they are trusted. Stay inside labs and authorized targets, write up what you learn, and you build a reputation that opens doors. Good luck, and have fun breaking things the right way.</p>
+<h2>Tips for learning on HTB and THM</h2>
+<p>Labs are forgiving in a way the real world is not, so use them to build habits, not just to collect flags.</p>
+<ol>
+<li>Start with TryHackMe, then move to HackTheBox. THM holds your hand with guided steps and explanations. HTB is more open and closer to real testing. Learn the idea on THM, then prove you can do it unaided on HTB.</li>
+<li>Look for API and web focused content. On THM try rooms around REST, GraphQL, IDOR, and OWASP. On HTB use the web and API tracks and the guided Starting Point first.</li>
+<li>Take notes from day one. Keep a simple log of each box: what you found, the request that worked, and why. Your notes become your personal playbook and speed up everything later.</li>
+<li>Do not rush to the writeup. Sit with a challenge until you are truly stuck, then read only the next hint, not the whole answer. The struggle is where the learning lives.</li>
+<li>Always read the full response. In labs it is tempting to chase the flag. Train yourself to read every header and every JSON field, because that is the habit that finds real bugs.</li>
+<li>Redo boxes without hints. Finishing a box once means you followed. Finishing it a second time alone means you learned.</li>
+<li>Learn the tools on easy targets. Get comfortable with Burp Repeater and Intruder on a lab where mistakes cost nothing, so they are second nature when it counts.</li>
+</ol>
+<h2>Tips for bug bounty hunting on APIs</h2>
+<p>Hunting is a different game from labs. The bug is not guaranteed to exist, and scope and rules matter as much as skill.</p>
+<ol>
+<li>Read the scope and rules first, every time. Know exactly which domains and APIs are in scope, what testing is allowed, and whether automated tools or denial of service testing are banned. Going out of scope can turn a reward into a ban or worse.</li>
+<li>Hunt for BOLA before anything fancy. Access control bugs are the most common and most rewarded API findings. Make two accounts, swap IDs, and test ownership everywhere. This alone pays.</li>
+<li>Map the API thoroughly. Grab the mobile app, decompile it or proxy its traffic, and look for undocumented endpoints, old API versions like <code>/v1/</code>, and hidden parameters. Old and forgotten endpoints are where the soft bugs hide.</li>
+<li>Chase the boring, high value fields. Any response with <code>role</code>, <code>is_admin</code>, <code>email</code>, <code>balance</code>, or internal IDs is worth probing. Try to read them where you should not, and set them where you should not.</li>
+<li>Throttle yourself. Do not hammer a target. Heavy automated scanning annoys teams, can break things, and often breaks the rules. Move deliberately and keep requests reasonable.</li>
+<li>Write clear reports. A good report shows the impact and gives exact reproduction steps: the request, the expected behavior, and the actual behavior. Clear reports get paid faster and build your reputation.</li>
+<li>Pick a target and go deep. Hunters who learn one program well out earn those who skim many. Depth beats breadth.</li>
+<li>Stay legal and ethical. Only test what is in scope, never look at real user data more than needed to prove the bug, and report responsibly. Your reputation is the real asset here.</li>
+</ol>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A simple, beginner friendly guide to how REST and GraphQL APIs get hacked, how to test them, how defenders fix the bugs, and where to practice legally.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> Oct 07, 2026</div>
+            <div><strong style="color:var(--ink)">Category:</strong> Bug bounty</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">api security</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rest</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">graphql</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">bug bounty</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pentesting</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web security</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

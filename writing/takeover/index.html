@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Subdomain enumeration challenge on TryHackMe. Finding a hidden subdomain via SSL certificate inspection to grab the flag.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="TryHackMe — TakeOver Writeup · 0xAdham">
+  <meta property="og:description" content="Subdomain enumeration challenge on TryHackMe. Finding a hidden subdomain via SSL certificate inspection to grab the flag.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>TryHackMe — TakeOver Writeup · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> Bug bounty</div>
+      <h1 class="page-title">TryHackMe — TakeOver Writeup</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-02-09</span>
+        <span>Bug bounty · Web security research · CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <h2>Challenge Overview</h2>
+<p><strong>Platform:</strong> TryHackMe<br />
+<strong>Challenge:</strong> TakeOver<br />
+<strong>Category:</strong> Web / Subdomain Enumeration</p>
+<p>The description hints at subdomain enumeration — that's basically handing you the attack path. Let's go.</p>
+<hr />
+<h2>Step 1 — Add Host Entry</h2>
+<p>Add the target domain and IP to <code>/etc/hosts</code> so the lab resolves:</p>
+<pre><code class="language-bash">echo &quot;10.49.189.165 futurevera.thm&quot; | sudo tee -a /etc/hosts
+</code></pre>
+<hr />
+<h2>Step 2 — Nmap Scan</h2>
+<pre><code class="language-bash">nmap -sV -sC 10.49.189.165
+</code></pre>
+<p>Output:</p>
+<pre><code>PORT    STATE SERVICE  VERSION
+22/tcp  open  ssh      OpenSSH 8.2p1 Ubuntu
+80/tcp  open  http     Apache httpd 2.4.41
+443/tcp open  ssl/http Apache httpd 2.4.41
+</code></pre>
+<p>Port 80 redirects to <code>https://futurevera.thm</code>. SSL cert on 443 shows <code>commonName=futurevera.thm</code>. Nothing too exciting yet.</p>
+<hr />
+<h2>Step 3 — Subdomain Enumeration</h2>
+<p>The room description says there are subdomains — let's find them with gobuster:</p>
+<pre><code class="language-bash">gobuster vhost \
+  -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt \
+  -u futurevera.thm \
+  -t 50 \
+  --append-domain
+</code></pre>
+<p>Got hits. Add them all to <code>/etc/hosts</code>:</p>
+<pre><code class="language-bash">echo &quot;10.49.189.165 portal.futurevera.thm&quot; | sudo tee -a /etc/hosts
+echo &quot;10.49.189.165 blog.futurevera.thm&quot; | sudo tee -a /etc/hosts
+echo &quot;10.49.189.165 support.futurevera.thm&quot; | sudo tee -a /etc/hosts
+</code></pre>
+<hr />
+<h2>Step 4 — SSL Certificate Inspection</h2>
+<p><code>portal</code> and <code>blog</code> are dead ends. <code>support.futurevera.thm</code> looks empty too — but check the SSL certificate.</p>
+<p>Visit <code>https://support.futurevera.thm</code> in the browser, click the padlock → view certificate → check the <strong>Subject Alternative Names</strong>.</p>
+<p>There it is:</p>
+<pre><code>secrethelpdesk934752.support.futurevera.thm
+</code></pre>
+<p>Hidden subdomain embedded in the cert. Classic.</p>
+<hr />
+<h2>Step 5 — Get the Flag</h2>
+<p>Add it to <code>/etc/hosts</code>:</p>
+<pre><code class="language-bash">echo &quot;10.49.189.165 secrethelpdesk934752.support.futurevera.thm&quot; | sudo tee -a /etc/hosts
+</code></pre>
+<p>Visit it on port 80:</p>
+<pre><code>http://secrethelpdesk934752.support.futurevera.thm
+</code></pre>
+<p>Flag.</p>
+<hr />
+<h2>Key Takeaway</h2>
+<p>SSL certificates are recon goldmines. SANs (Subject Alternative Names) often list internal subdomains, staging environments, and hidden endpoints that never show up in DNS brute-forcing. Always check the cert.</p>
+<hr />
+<p>*— 0xAdham *</p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Subdomain enumeration challenge on TryHackMe. Finding a hidden subdomain via SSL certificate inspection to grab the flag.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-02-09</div>
+            <div><strong style="color:var(--ink)">Category:</strong> Bug bounty</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

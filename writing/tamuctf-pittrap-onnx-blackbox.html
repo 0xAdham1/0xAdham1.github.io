@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Solving a black-box neural network challenge at TAMU CTF (gigem) by treating the ONNX model as an oracle and applying simulated annealing to find the winning input.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="TAMU CTF 2025 — pittrap: Black-Box ONNX Neural Network Optimization · 0xAdham">
+  <meta property="og:description" content="Solving a black-box neural network challenge at TAMU CTF (gigem) by treating the ONNX model as an oracle and applying simulated annealing to find the winning input.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>TAMU CTF 2025 — pittrap: Black-Box ONNX Neural Network Optimization · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">TAMU CTF 2025 — pittrap: Black-Box ONNX Neural Network Optimization</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2025-03-29</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <h2>Challenge Overview</h2>
+<p><strong>CTF:</strong> TAMU CTF 2025 (gigem)<br />
+<strong>Category:</strong> Misc / Rev<br />
+<strong>Challenge:</strong> pittrap</p>
+<p>The challenge gave us an ONNX neural network model with no source, no architecture diagram, and one job: find the input that makes it output something specific. Classic black-box optimization problem.</p>
+<h2>Initial Recon</h2>
+<p>First thing — inspect what we're working with:</p>
+<pre><code class="language-python">import onnxruntime as ort
+import numpy as np
+
+sess = ort.InferenceSession(&quot;pittrap.onnx&quot;)
+
+# check input/output shape
+for inp in sess.get_inputs():
+    print(inp.name, inp.shape, inp.type)
+
+for out in sess.get_outputs():
+    print(out.name, out.shape, out.type)
+</code></pre>
+<p>Output told us the expected input shape and the output format. The model takes a fixed-length float vector and outputs a score. Goal: maximize (or hit a threshold on) that score.</p>
+<p>No gradients available — it's ONNX, inference only. No white-box access.</p>
+<h2>The Approach: Simulated Annealing</h2>
+<p>Since we can't backpropagate, we treat the model as a pure oracle: feed it inputs, read the output score, iterate.</p>
+<p>Simulated annealing is perfect here:<br />
+- Explores the input space without getting trapped in local minima<br />
+- Accepts worse solutions with decreasing probability over time<br />
+- No gradient required</p>
+<pre><code class="language-python">import onnxruntime as ort
+import numpy as np
+import math
+import random
+
+sess = ort.InferenceSession(&quot;pittrap.onnx&quot;)
+input_name = sess.get_inputs()[0].name
+input_shape = sess.get_inputs()[0].shape  # e.g. [1, N]
+
+def score(x):
+    x_input = x.reshape(input_shape).astype(np.float32)
+    result = sess.run(None, {input_name: x_input})
+    return float(result[0].flatten()[0])
+
+# Initialize random candidate
+n = input_shape[-1]
+current = np.random.uniform(-1, 1, n)
+current_score = score(current)
+
+best = current.copy()
+best_score = current_score
+
+# Annealing schedule
+T = 1.0
+T_min = 1e-5
+alpha = 0.995
+step_size = 0.1
+
+iteration = 0
+while T &gt; T_min:
+    # Perturb candidate
+    neighbor = current + np.random.randn(n) * step_size
+    neighbor_score = score(neighbor)
+
+    delta = neighbor_score - current_score
+
+    # Accept if better, or probabilistically if worse
+    if delta &gt; 0 or random.random() &lt; math.exp(delta / T):
+        current = neighbor
+        current_score = neighbor_score
+
+    if current_score &gt; best_score:
+        best = current.copy()
+        best_score = current_score
+        print(f&quot;[+] New best: {best_score:.6f} @ iter {iteration}&quot;)
+
+    T *= alpha
+    iteration += 1
+
+print(f&quot;\n[*] Final score: {best_score}&quot;)
+print(f&quot;[*] Best input: {best}&quot;)
+</code></pre>
+<h2>Getting the Flag</h2>
+<p>Once the score crossed the threshold the model was checking for, the challenge server returned the flag. The model was essentially a learned classifier — it was trained to recognize a specific "correct" input pattern, and SA found it through pure exploration.</p>
+<h2>Key Takeaways</h2>
+<ul>
+<li>ONNX inference-only models are black boxes — treat them like APIs, not source code</li>
+<li>Simulated annealing beats random search significantly for continuous input spaces</li>
+<li>Cooling schedule matters — too fast and you get stuck, too slow and you waste time</li>
+<li>Start with a wide <code>step_size</code> and narrow it as temperature drops for better convergence</li>
+</ul>
+<hr />
+<p><em>— 0xAdham | RootRunners</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Solving a black-box neural network challenge at TAMU CTF (gigem) by treating the ONNX model as an oracle and applying simulated annealing to find the winning input.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2025-03-29</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rev</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

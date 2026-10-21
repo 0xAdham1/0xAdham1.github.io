@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Breaking AES-128 without touching the algorithm — Correlation Power Analysis on a black-box hardware target using power traces and Hamming weight correlation.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="0xL4ugh CTF v5 — Cracking AES with a Multimeter: Side-Channel Analysis · 0xAdham">
+  <meta property="og:description" content="Breaking AES-128 without touching the algorithm — Correlation Power Analysis on a black-box hardware target using power traces and Hamming weight correlation.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>0xL4ugh CTF v5 — Cracking AES with a Multimeter: Side-Channel Analysis · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">0xL4ugh CTF v5 — Cracking AES with a Multimeter: Side-Channel Analysis</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-01-26</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Event:</strong> 0xL4ugh v5 CTF<br />
+<strong>Category:</strong> Hardware<br />
+<strong>Challenge:</strong> SCA1 (Side-Channel Analysis 1)</p>
+<p>We're taught that AES-128 is a digital fortress. 10 rounds. 2¹²⁸ key space. The math holds. The implementation doesn't.</p>
+<p>This is how I broke AES without touching a single line of the algorithm.</p>
+<hr />
+<h2>Files Provided</h2>
+<ul>
+<li><code>plaintexts.npy</code> — 10,000 inputs fed to a black-box AES core</li>
+<li><code>traces.npy</code> — Power consumption measurements during each encryption</li>
+</ul>
+<p>No source code. No debugger. No cryptographic oracle. Just power traces.</p>
+<hr />
+<h2>The Physics of Betrayal</h2>
+<p>AES doesn't run on math. It runs on transistors — physical devices consuming physical power to flip physical bits. Power consumption isn't constant. It varies with the data being processed.</p>
+<p>This is a <strong>side-channel</strong>: an unintended information leak through the physical implementation. The specific leak here is <strong>Hamming weight correlation</strong>:</p>
+<blockquote>
+<p>More <code>1</code> bits in a value → more gates switching → more current drawn.</p>
+</blockquote>
+<p>Simple. Devastating.</p>
+<hr />
+<h2>The Attack: Correlation Power Analysis (CPA)</h2>
+<p>CPA correlates predicted power consumption against measured traces statistically.</p>
+<h3>Target</h3>
+<p>Round 1, SubBytes — the first S-Box lookup:</p>
+<pre><code>s = SBox(plaintext_byte ⊕ key_byte)
+</code></pre>
+<p>We control the plaintext. We measure the power. The key enters linearly through XOR.</p>
+<h3>Hypothesis</h3>
+<p>For each of the 16 key byte positions and each possible value (0–255), predict power consumption using Hamming weight:</p>
+<pre><code>P_predicted = HammingWeight(SBox(plaintext ⊕ guess))
+</code></pre>
+<p>A 256 × 10,000 matrix of predictions per byte position.</p>
+<h3>Correlation</h3>
+<p>For each time sample in the traces, compute the Pearson correlation between predictions and reality:</p>
+<ul>
+<li><strong>Wrong guess:</strong> ρ ≈ 0 — model and reality are strangers</li>
+<li><strong>Correct guess:</strong> ρ → 1 at the exact clock cycle of S-Box execution — a spike, the electromagnetic fingerprint of the secret byte</li>
+</ul>
+<hr />
+<h2>The Code</h2>
+<pre><code class="language-python">import numpy as np
+
+plaintexts = np.load(&quot;plaintexts.npy&quot;)  # Shape: (10000, 16)
+traces = np.load(&quot;traces.npy&quot;)          # Shape: (10000, 3000)
+
+SBOX = [
+    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5,
+    0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+    # ... full 256-byte table ...
+]
+
+def hamming_weight(x):
+    return bin(x).count('1')
+
+vhw = np.vectorize(hamming_weight)
+vsbox = np.vectorize(lambda x: SBOX[x])
+
+key = np.zeros(16, dtype=np.uint8)
+
+for byte_pos in range(16):
+    pt_byte = plaintexts[:, byte_pos]
+
+    guesses = np.arange(256).reshape(-1, 1)
+    sbox_out = vsbox(pt_byte ^ guesses)
+    hypotheses = vhw(sbox_out)
+
+    h_mean = hypotheses.mean(axis=1, keepdims=True)
+    t_mean = traces.mean(axis=0)
+    h_centered = hypotheses - h_mean
+    t_centered = traces - t_mean
+
+    numerator = h_centered @ t_centered
+    denom_h = np.sqrt(np.sum(h_centered**2, axis=1, keepdims=True))
+    denom_t = np.sqrt(np.sum(t_centered**2, axis=0))
+    correlations = numerator / (denom_h * denom_t)
+
+    max_corrs = np.max(np.abs(correlations), axis=1)
+    key[byte_pos] = np.argmax(max_corrs)
+
+    print(f&quot;Byte {byte_pos:2d}: 0x{key[byte_pos]:02x} &quot;
+          f&quot;(correlation: {max_corrs[key[byte_pos]]:.4f})&quot;)
+</code></pre>
+<p>16 iterations. 4,096 correlations. Sub-second execution.</p>
+<hr />
+<h2>Output</h2>
+<pre><code>Byte  0: 0x44 (correlation: 0.8234)  → 'D'
+Byte  1: 0x50 (correlation: 0.7912)  → 'P'
+Byte  2: 0x41 (correlation: 0.8456)  → 'A'
+Byte  3: 0x34 (correlation: 0.8123)  → '4'
+Byte  4: 0x42 (correlation: 0.7789)  → 'B'
+Byte  5: 0x61 (correlation: 0.8345)  → 'a'
+Byte  6: 0x62 (correlation: 0.8012)  → 'b'
+Byte  7: 0x79 (correlation: 0.7890)  → 'y'
+Byte  8: 0x47 (correlation: 0.8567)  → 'G'
+Byte  9: 0x6f (correlation: 0.8234)  → 'o'
+Byte 10: 0x67 (correlation: 0.7901)  → 'g'
+Byte 11: 0x6f (correlation: 0.8123)  → 'o'
+Byte 12: 0x47 (correlation: 0.8456)  → 'G'
+Byte 13: 0x61 (correlation: 0.7789)  → 'a'
+Byte 14: 0x67 (correlation: 0.8345)  → 'g'
+Byte 15: 0x61 (correlation: 0.8012)  → 'a'
+</code></pre>
+<p>ASCII: <code>DPA4BabyGogoGaga</code></p>
+<p>Correlations above 0.77 across all bytes. Statistical certainty.</p>
+<hr />
+<h2>Why It Works</h2>
+<table>
+<thead>
+<tr>
+<th>Factor</th>
+<th>Explanation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linear key mixing</td>
+<td>XOR allows byte-by-byte isolation in Round 1</td>
+</tr>
+<tr>
+<td>Deterministic leakage</td>
+<td>Hamming weight approximates power consumption</td>
+</tr>
+<tr>
+<td>Independent noise</td>
+<td>Averaging 10,000 traces reduces variance as 1/√N</td>
+</tr>
+<tr>
+<td>No countermeasures</td>
+<td>No masking, hiding, or shuffling implemented</td>
+</tr>
+</tbody>
+</table>
+<p>After ~1,000 traces the correct key byte's correlation dominates. At 10,000 it's cryptographic certainty.</p>
+<hr />
+<h2>The Bigger Picture</h2>
+<p>This isn't a CTF trick. This is <strong>Differential Power Analysis</strong>, published by Kocher et al. in 1999, now standard in hardware security certification (Common Criteria, FIPS 140-2/3). Smart cards, TPMs, Apple Secure Enclave, Qualcomm SPU — everything gets this treatment.</p>
+<p>Real-world countermeasures:<br />
+- <strong>Masking</strong> — split sensitive values into random shares<br />
+- <strong>Hiding</strong> — randomize execution order, inject power noise<br />
+- <strong>Shuffling</strong> — permute S-Box access patterns</p>
+<p>None were present here.</p>
+<hr />
+<h2>Flag</h2>
+<pre><code>0xL4ugh{DPA4BabyGogoGaga}
+</code></pre>
+<p>The math of AES remains unbroken. The physics of AES is an open book.</p>
+<hr />
+<p><em>— 0xAdham | RootRunners</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Breaking AES-128 without touching the algorithm — Correlation Power Analysis on a black-box hardware target using power traces and Hamming weight correlation.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-01-26</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">hardware</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">crypto</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

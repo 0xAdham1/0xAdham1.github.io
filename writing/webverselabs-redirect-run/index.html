@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="The browser followed the redirect. Burp didn&#x27;t.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="WebVerse Labs — Redirect Run · 0xAdham">
+  <meta property="og:description" content="The browser followed the redirect. Burp didn&#x27;t.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>WebVerse Labs — Redirect Run · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">WebVerse Labs — Redirect Run</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-24</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> WebVerse Labs<br />
+<strong>Challenge:</strong> Redirect Run<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Easy</p>
+<hr />
+<h2>Step 1 — Find the Shortlink</h2>
+<p>The Quikpay landing page has a live demo shortlink sitting right on it:</p>
+<pre><code>qp.link/r/qp-r4-7821ab
+</code></pre>
+<p><img alt="Quikpay landing page with shortlink" src="/blog/redirect-run/landingpage.png" /></p>
+<hr />
+<h2>Step 2 — Follow It In Burp</h2>
+<p>Visit the shortlink with Burp intercepting. The browser sees a "thanks for your purchase" page and moves on. Burp catches the 302 response before the redirect fires — and the body isn't empty.</p>
+<p><img alt="Burp intercepting the 302 redirect" src="/blog/redirect-run/link.png" /></p>
+<hr />
+<h2>Step 3 — Read the Debug Comment</h2>
+<p>Buried in the 302 response body:</p>
+<pre><code class="language-html">&lt;!-- Quikpay redirect debug (production safe? — TODO: strip before launch) —
+request_token: qp-r4-7821ab
+upstream_status: 200
+upstream_latency_ms: 38
+internal_ref: WEBVERSE{...}
+reconciliation_window: 24h
+cookie_strip_policy: strict
+note: leave this in until QA signs off on the new tracing pipeline
+--&gt;
+</code></pre>
+<p><img alt="Flag visible in 302 response body" src="/blog/redirect-run/burpflag.png" /></p>
+<p><code>internal_ref</code> is the flag. The TODO never got done.</p>
+<hr />
+<h2>Why It Works</h2>
+<p>3xx redirect responses have a body — browsers just don't render it. The dev team left a debug comment in the intermediate response assuming nobody would ever read it. Burp reads everything.</p>
+<hr />
+<h2>The Fix</h2>
+<ul>
+<li>Never embed sensitive data in redirect response bodies</li>
+<li>Strip all debug comments before shipping to production</li>
+<li>QA sign-off shouldn't be gated on leaving secrets in HTTP responses</li>
+</ul>
+<p>The browser skipped right past it. Burp didn't.</p>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>The browser followed the redirect. Burp didn&#x27;t.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-24</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

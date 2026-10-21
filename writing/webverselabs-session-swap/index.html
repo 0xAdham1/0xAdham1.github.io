@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="The staff portal trusts the browser to tell the truth about who&#x27;s logged in. It shouldn&#x27;t.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="WebVerse Labs — Session Swap · 0xAdham">
+  <meta property="og:description" content="The staff portal trusts the browser to tell the truth about who&#x27;s logged in. It shouldn&#x27;t.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>WebVerse Labs — Session Swap · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">WebVerse Labs — Session Swap</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-23</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> WebVerse Labs<br />
+<strong>Challenge:</strong> Session Swap<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Easy</p>
+<hr />
+<h2>Step 1 — Login With Anything</h2>
+<p>The portal has zero credential validation. Any username, any password — you're in.</p>
+<pre><code>Username: test
+Password: test
+</code></pre>
+<p>Lands you on the dashboard as Jessa, Front Desk Lead, badge RD-04412.</p>
+<p><img alt="Login page" src="/blog/session-swap/login.png" /></p>
+<hr />
+<h2>Step 2 — Intercept the Cookie</h2>
+<p>Intercept the <code>/dashboard</code> request in Burp Suite. The cookie is sitting there in plain English:</p>
+<pre><code>Cookie: role=user; badge=RD-04412
+</code></pre>
+<p>No JWT. No HMAC. No Base64. Raw plaintext.</p>
+<p><img alt="Burp Suite cookie intercept" src="/blog/session-swap/burprole.png" /></p>
+<hr />
+<h2>Step 3 — Swap the Role</h2>
+<p>Change <code>role=user</code> to <code>role=admin</code> and forward:</p>
+<pre><code>Cookie: role=admin; badge=RD-04412
+</code></pre>
+<p>The server accepts it without a single complaint.</p>
+<p><img alt="Logged in as admin" src="/blog/session-swap/logedin.png" /></p>
+<hr />
+<h2>Step 4 — Admin Console</h2>
+<p><code>/admin</code> loads. Full access. The Q2 Internal Reference Token is sitting in an "Internal Memo — For Administrative Review Only" banner, issued by Ridgeline IT &amp; Security. That's the flag.</p>
+<p><img alt="Admin console" src="/blog/session-swap/admin.png" /></p>
+<p><img alt="Flag" src="/blog/session-swap/flag.png" /></p>
+<hr />
+<h2>Why It Works</h2>
+<p>The server never validates the cookie server-side. No cryptographic signature means anyone can modify the role field freely. The browser is the authority — and the browser lies.</p>
+<hr />
+<h2>The Fix</h2>
+<ul>
+<li>Sign cookies with HMAC or use properly verified JWTs</li>
+<li>Never store authorization data client-side without integrity protection</li>
+<li>Validate roles server-side on every privileged request, never trust cookie values directly</li>
+</ul>
+<p>Plaintext cookies are just suggestions.</p>
+<hr />
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>The staff portal trusts the browser to tell the truth about who&#x27;s logged in. It shouldn&#x27;t.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-23</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Verified security research and responsible disclosure by 0xAdham: three Krayin CRM CVEs (IDOR, BOLA, SSRF filter bypass) fixed in 2.2.7.">
+  <meta name="keywords" content="Krayin CRM, CVE-2026-112286, CVE-2026-112287, CVE-2026-112288, IDOR, BOLA, SSRF, vulnerability disclosure, web security research">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="Research · 0xAdham">
+  <meta property="og:description" content="CVEs, vulnerability research and responsible disclosure by 0xAdham: three Krayin CRM issues fixed in version 2.2.7.">
+  <meta name="twitter:card" content="summary">
+  <title>Research · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="../assets/mark.svg">
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/">Writing</a><a href="/research/" aria-current="page">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="page-hero">
+      <div class="wrap">
+        <div class="eyebrow"><span class="index">RESEARCH / 01</span> Vulnerability Record</div>
+        <h1 class="page-title">Find it.<br><span class="accent">Report it.</span></h1>
+        <p class="page-intro">Vulnerabilities discovered and responsibly disclosed. Each issue is reported to the vendor before publication and documented in a full technical writeup once a verified fix is released.</p>
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap">
+        <div class="research-list">
+          <article class="research-item">
+            <h2>Krayin CRM</h2>
+            <div>
+              <p>A white-box security review of <a href="https://github.com/krayin/laravel-crm" target="_blank" rel="noopener noreferrer"><strong>Krayin CRM</strong></a> (<code>krayin/laravel-crm</code>) turned up three vulnerabilities, all responsibly disclosed and patched in release <strong>2.2.7</strong>:</p>
+              <div class="fact-chips">
+                <span>IDOR (CWE-639)</span>
+                <span>BOLA (CWE-639)</span>
+                <span>SSRF / DNS Rebinding (CWE-918 / CWE-367)</span>
+              </div>
+              <ul style="margin: 18px 0 18px 22px; line-height: 1.85; color: var(--soft);">
+                <li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-112286" target="_blank" rel="noopener noreferrer"><strong style="color:var(--ink)">CVE-2026-112286</strong></a> (Severity: High 7.1) — Quote module IDOR, cross-user read (CWE-639)</li>
+                <li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-112287" target="_blank" rel="noopener noreferrer"><strong style="color:var(--ink)">CVE-2026-112287</strong></a> (Severity: High 8.3) — Mail module BOLA on the write path (CWE-639)</li>
+                <li><a href="https://nvd.nist.gov/vuln/detail/CVE-2026-112288" target="_blank" rel="noopener noreferrer"><strong style="color:var(--ink)">CVE-2026-112288</strong></a> (Severity: Low 3.1) — Webhook SSRF filter bypass via DNS rebinding (CWE-918 / CWE-367)</li>
+              </ul>
+              <p class="detail">Full analysis, root causes, and patch walkthrough: <a href="/writing/krayin-crm-three-cves/">A Patch Is Not a Fix: Chaining Krayin CRM's Blind Spots →</a></p>
+            </div>
+          </article>
+          <article class="research-item">
+            <h2>Bug Bounty &amp; Web Research</h2>
+            <div>
+              <p>I test web targets on <strong>HackerOne</strong>, <strong>Bugcrowd</strong>, and <strong>Intigriti</strong>. My research focuses on server-side and access-control vulnerabilities rather than surface-level reflected bugs:</p>
+              <div class="fact-chips">
+                <span>Access Control &amp; IDOR</span>
+                <span>Authentication &amp; JWT</span>
+                <span>Server-Side Injection</span>
+                <span>Business Logic Flaws</span>
+              </div>
+              <p class="detail" style="margin-top:14px">Everything is handled through responsible disclosure: findings go to the vendor or program first, and technical writeups are shared only after remediation.</p>
+            </div>
+          </article>
+          <article class="research-item">
+            <h2>Competition &amp; Practice</h2>
+            <div>
+              <p>Active web and reversing CTF player with <strong>G4mra</strong> and <strong>RootRunners</strong>, plus ongoing vulnerability research, challenge creation, and security labs across major platforms.</p>
+              <div class="fact-chips">
+                <span>CTFs (G4mra / RootRunners)</span>
+                <span>Hack The Box</span>
+                <span>TryHackMe</span>
+                <span>FlagYard</span>
+                <span>WebVerse Labs</span>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px;">
+                <a class="button" href="https://app.hackthebox.com/users/2596885" target="_blank" rel="noopener noreferrer">Hack The Box <span class="arrow" aria-hidden="true">↗</span></a>
+                <a class="button" href="https://tryhackme.com/p/Shaiblaban" target="_blank" rel="noopener noreferrer">TryHackMe <span class="arrow" aria-hidden="true">↗</span></a>
+                <a class="button" href="https://flagyard.com/profile/4f3cbeb3-05fd-4b3a-a31f-44697aebd737" target="_blank" rel="noopener noreferrer">FlagYard <span class="arrow" aria-hidden="true">↗</span></a>
+                <a class="button" href="https://dashboard.webverselabs-pro.com/u/0xAdham" target="_blank" rel="noopener noreferrer">WebVerse Labs <span class="arrow" aria-hidden="true">↗</span></a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="wrap two-col">
+        <div>
+          <div class="eyebrow"><span class="index">METHOD</span> Responsible testing</div>
+          <h2 class="section-title" style="margin-top:20px">Scope first.<br>Evidence always.</h2>
+        </div>
+        <div class="copy">
+          <p>Security testing should stay within the authorized scope. A finding should be reproducible, described accurately, and disclosed in a way that gives the owner room to remediate.</p>
+          <p>For a program inquiry, security review, or research collaboration, use one of the author's contact channels.</p>
+          <a class="button primary" href="mailto:0xadham.sh@gmail.com">Contact Adham <span class="arrow" aria-hidden="true">↗</span></a>
+          <p style="margin-top:18px"><a href="https://github.com/0xadham1" target="_blank" rel="noopener noreferrer">GitHub profile →</a></p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/">Back to field notes ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="../assets/site.js" defer></script>
+</body>
+</html>

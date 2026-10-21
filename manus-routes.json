@@ -1,0 +1,116 @@
+{
+  "routes": [
+    {
+      "path": "/",
+      "title": "Field Notes \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/",
+      "title": "Writing Archive \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/article-template.html",
+      "title": "Article Layout Preview \u00b7 0xAdham"
+    },
+    {
+      "path": "/about/",
+      "title": "About \u00b7 0xAdham"
+    },
+    {
+      "path": "/research/",
+      "title": "Research \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/krayin-crm-three-cves/",
+      "title": "A Patch Is Not a Fix: Chaining Krayin CRM's Blind Spots \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/api-hacking-rest-graphql/",
+      "title": "API Hacking for Beginners: Breaking REST and GraphQL \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/0xvoid-loopback-lens/",
+      "title": "0xVoid: Loopback Lens \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/messageboard/",
+      "title": "gaslightCTF: messageboard \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/eycc-mall-albostan/",
+      "title": "EYCC: Mall Albostan \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/eycc-edu-svg/",
+      "title": "EYCC: EduSVG \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/flagyard-tech-shop/",
+      "title": "FlagYard \u2014 Tech Shop \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-power-tower/",
+      "title": "BYUCTF: Power Tower \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-mixed-signals/",
+      "title": "BYUCTF: Mixed Signals \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-angr-management/",
+      "title": "BYUCTF: Angr Management \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-intro-2/",
+      "title": "BYUCTF: Intro 2 \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-incontinent/",
+      "title": "BYUCTF: Incontinent \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-hex-to-int/",
+      "title": "BYUCTF: Hex to Int \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/byuctf-heap2win/",
+      "title": "BYUCTF: heap2win \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/flagyard-ohmyql/",
+      "title": "FlagYard: OhMyQL \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/webverselabs-vellichor-press/",
+      "title": "WebVerse Labs \u2014 Vellichor Press \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/webverselabs-redirect-run/",
+      "title": "WebVerse Labs \u2014 Redirect Run \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/webverselabs-session-swap/",
+      "title": "WebVerse Labs \u2014 Session Swap \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/takeover/",
+      "title": "TryHackMe \u2014 TakeOver Writeup \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/0xl4ugh-sca1-aes/",
+      "title": "0xL4ugh CTF v5 \u2014 Cracking AES with a Multimeter: Side-Channel Analysis \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/olicyber-dependency-hell/",
+      "title": "OliCyber \u2014 Dependency Hell: Racing SQLite Session Store \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/hackerdna-hack-the-cookie/",
+      "title": "HackerDNA \u2014 Hack the Cookie: Insecure Session Management \u00b7 0xAdham"
+    },
+    {
+      "path": "/writing/tamuctf-pittrap-onnx-blackbox/",
+      "title": "TAMU CTF 2025 \u2014 pittrap: Black-Box ONNX Neural Network Optimization \u00b7 0xAdham"
+    }
+  ]
+}

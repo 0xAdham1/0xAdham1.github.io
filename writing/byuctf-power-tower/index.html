@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="Multi-prime RSA where every factor is ≤ 2^16 and the exponent is a 25-high right-associative power tower. Factoring is trivial trial division; the real trick is inverting the tower via Euler&#x27;s theorem applied recursively. The whole modulus chain stays 2^16-smooth.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Power Tower · 0xAdham">
+  <meta property="og:description" content="Multi-prime RSA where every factor is ≤ 2^16 and the exponent is a 25-high right-associative power tower. Factoring is trivial trial division; the real trick is inverting the tower via Euler&#x27;s theorem applied recursively. The whole modulus chain stays 2^16-smooth.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Power Tower · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Power Tower</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Power Tower<br />
+<strong>Category:</strong> Crypto<br />
+<strong>Difficulty:</strong> Hard</p>
+<h2>Flag</h2>
+<p><code>byuctf{eulers_phi_phunction_is_a_phun_phunction}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1359</code>. <em>"multi-prime RSA where each factor of n is at most 2^16. Prove you know a fast algorithm to invert the power tower!"</em></p>
+<ul>
+<li>Server prints <code>n</code>, <code>c</code>, <code>e</code>, then you must send <code>m</code> <strong>within 1 second</strong>.</li>
+<li><code>n</code> ≈ 392 bits = product of <strong>25 distinct ≤16-bit primes</strong>.</li>
+<li><code>e</code> is printed as a <code>^</code>-joined list, e.g. <code>e = 79^31^23^34^...^47</code> (25 terms), a <strong>right-associative power tower</strong> <code>79^(31^(23^(...)))</code>, an astronomically large exponent.</li>
+</ul>
+<blockquote>
+<p>The provided <code>chall_modified.py</code> sets <code>NUM_EXPS=1</code> (single small exponent), a simplification to explain the encryption. The <strong>real server uses a 25-high tower</strong>, which is the actual challenge.</p>
+</blockquote>
+<h2>Two sub-problems</h2>
+<ol>
+<li><strong>Factor <code>n</code>.</strong> Trivial: every prime ≤ 2^16, so trial-divide by the ~6500 primes below 65536. A 392-bit <code>n</code> factors in milliseconds. Then <code>φ(n) = ∏(pᵢ − 1)</code>.</li>
+<li><strong>Invert the tower.</strong> Decryption needs <code>d = E⁻¹ mod φ(n)</code>, but <code>E</code> (the tower) is far too large to materialise. The fix: you only need <code>E mod φ(n)</code>, and <code>E⁻¹ mod φ = (E mod φ)⁻¹ mod φ</code>.</li>
+</ol>
+<h2>The key idea: iterated modular tetration</h2>
+<p>Compute <code>E mod φ</code> without ever building <code>E</code>, via Euler's theorem recursively:</p>
+<p><code>a^X mod m = a^( (X mod φ(m)) + φ(m) ) mod m</code>, valid when <code>X ≥ log2(m)</code> (the <code>+φ(m)</code> term is what makes it correct even when <code>gcd(a,m) ≠ 1</code>, the "phun" part).</p>
+<p>Apply it down the tower: to get <code>a₀^(rest) mod m</code>, recurse to get <code>rest mod φ(m)</code>, lift by <code>φ(m)</code>, then one <code>pow</code>. <strong>Why it terminates cheaply:</strong> <code>φ(n) = ∏(pᵢ−1)</code> with every <code>pᵢ−1 ≤ 2^16</code>, so <code>φ(n)</code> is <strong>2^16-smooth</strong>. And <code>φ</code> of a 2^16-smooth number stays 2^16-smooth (each prime power <code>q^a</code> contributes <code>q^{a-1}(q−1)</code>, and <code>q−1 &lt; 2^16</code>). So <strong>every modulus in the whole recursion factors by the same small trial division</strong>. Depth ≤ 25, all fast.</p>
+<p>The <code>+φ(m)</code> lift is only valid when the sub-exponent is truly <code>≥ log2(m)</code>. The very top of a tower is a <em>small</em> number (e.g. <code>47</code>), so I gate the lift with a <strong>capped tower evaluation</strong> (<code>tower_capped</code>) that returns the exact value if <code>&lt; 2^800</code>, else a sentinel, giving an exact <code>≥ φ(m)</code> comparison at every level.</p>
+<h2>Solution</h2>
+<pre><code class="language-python">import socket, re, time
+from math import prod
+
+N = 1 &lt;&lt; 16
+sieve = bytearray([1]) * (N+1); sieve[0]=sieve[1]=0
+for i in range(2, int(N**0.5)+1):
+    if sieve[i]: sieve[i*i::i] = b'\x00' * len(sieve[i*i::i])
+primes = [i for i in range(2, N+1) if sieve[i]]
+
+def inv(a, m):                       # modular inverse via extended euclid
+    a %= m; lo, hi, x0, x1 = a, m, 1, 0
+    while lo &gt; 1:
+        q = hi // lo; lo, hi = hi - q*lo, lo; x0, x1 = x1 - q*x0, x0
+    return x0 % m
+
+def factor_smooth(x):                # works because every modulus is 2^16-smooth
+    f = {}
+    for p in primes:
+        if p*p &gt; x: break
+        while x % p == 0: f[p] = f.get(p,0)+1; x //= p
+    if x &gt; 1: f[x] = f.get(x,0)+1
+    return f
+def phi_of(x):
+    r = 1
+    for p,a in factor_smooth(x).items(): r *= (p-1)*p**(a-1)
+    return r
+
+CAP = 1 &lt;&lt; 800
+def tower_capped(arr):               # exact tower value, or CAP if &gt;= 2^800
+    v = arr[-1]
+    for a in reversed(arr[:-1]):
+        if a == 1: v = 1; continue
+        v = CAP if v &gt;= 800 else min(a**v, CAP)
+    return v
+
+def tower_mod(arr, m):               # E mod m for E = arr[0]^arr[1]^...  (right-assoc)
+    if m == 1: return 0
+    if len(arr) == 1: return arr[0] % m
+    ph = phi_of(m)
+    sub = tower_mod(arr[1:], ph)
+    if tower_capped(arr[1:]) &gt;= ph: sub += ph     # Euler lift, gated by exact compare
+    return pow(arr[0], sub, m)
+
+s = socket.create_connection(('&lt;remote-host&gt;', 1359), timeout=20)
+buf = b''; s.settimeout(15)
+while b'What is m?' not in buf:
+    d = s.recv(65536); buf += d
+txt = buf.decode(errors='replace')
+n = int(re.search(r'n = (\d+)', txt).group(1))
+c = int(re.search(r'c = (\d+)', txt).group(1))
+arr = [int(x) for x in re.search(r'e = ([\d\^]+)', txt).group(1).split('^')]
+
+facs, x = [], n
+for p in primes:
+    if x % p == 0:
+        facs.append(p); x //= p
+        if x == 1: break
+assert x == 1
+phi  = prod(f-1 for f in facs)
+Emod = tower_mod(arr, phi)
+d    = inv(Emod, phi)
+m    = pow(c, d, n)
+assert pow(m, Emod, n) == c          # verify: m^E ≡ c  (since E ≡ Emod mod φ)
+s.sendall(str(m).encode() + b'\n')   # ~17 ms total, well under the 1 s limit
+print(s.recv(4096).decode())
+</code></pre>
+<pre><code>primes=25  verify=True  compute=16.8ms
+Correct!!! Here's the flag: byuctf{eulers_phi_phunction_is_a_phun_phunction}
+</code></pre>
+<h2>Pitfalls</h2>
+<ul>
+<li><strong>Don't compute the tower.</strong> The naïve <code>E = a**(b**(c**...))</code> hangs forever building a number with billions of digits (my first attempt did exactly this). You never need <code>E</code>, only <code>E mod φ</code>.</li>
+<li><strong><code>gcd(a, m) ≠ 1</code> levels.</strong> Plain <code>a^(X mod φ(m))</code> is wrong when the base shares a factor with the modulus; the <code>+ φ(m)</code> lift fixes it, but only when the sub-exponent really is <code>≥ log2(m)</code>, hence the capped check (the topmost term is small).</li>
+<li><strong>Verify before sending</strong> (<code>pow(m, Emod, n) == c</code>) so you don't waste the 1-second window on a wrong association/parse. Right-associativity was correct here on the first try.</li>
+<li>φ(n) for squarefree <code>n</code> is <code>∏(pᵢ−1)</code>; <code>pᵢ−1</code> divides it, so <code>E·d ≡ 1 mod φ</code> ⇒ <code>≡ 1 mod (pᵢ−1)</code> for every prime → decryption is valid across all 25 factors.</li>
+</ul>
+<h2>Takeaways</h2>
+<ul>
+<li>"Power tower" / tetration mod is <strong>Euler's theorem applied recursively</strong>; the whole trick is that the modulus chain <code>φ(φ(...φ(n)))</code> stays smooth here, so each level factors trivially.</li>
+<li>Smooth/small-prime multi-prime RSA has <strong>no security</strong>. Factoring is just bounded trial division. The difficulty was entirely the exponent representation, not the modulus.</li>
+<li>General reusable primitive: <code>tower_mod(arr, m)</code> for evaluating any power tower modulo <code>m</code>.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>Multi-prime RSA where every factor is ≤ 2^16 and the exponent is a 25-high right-associative power tower. Factoring is trivial trial division; the real trick is inverting the tower via Euler&#x27;s theorem applied recursively. The whole modulus chain stays 2^16-smooth.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">crypto</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rsa</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">multi-prime</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">eulers-theorem</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">tetration</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

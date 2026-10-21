@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="The name baits you toward symbolic execution. But a &#x27;maze of gotos&#x27; built from literal cmp-imm → jmp edges is a static CFG. Parse the disassembly, BFS room 0 to the win room, replay 72 moves. No SMT, instant.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="BYUCTF: Angr Management · 0xAdham">
+  <meta property="og:description" content="The name baits you toward symbolic execution. But a &#x27;maze of gotos&#x27; built from literal cmp-imm → jmp edges is a static CFG. Parse the disassembly, BFS room 0 to the win room, replay 72 moves. No SMT, instant.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>BYUCTF: Angr Management · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> CTF</div>
+      <h1 class="page-title">BYUCTF: Angr Management</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-05-31</span>
+        <span>CTF</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p><strong>Platform:</strong> BYUCTF<br />
+<strong>Challenge:</strong> Angr Management<br />
+<strong>Category:</strong> Reversing<br />
+<strong>Difficulty:</strong> Medium</p>
+<h2>Flag</h2>
+<p><code>byuctf{g3t_w1th_th3_c0ntr01_fl0w}</code></p>
+<h2>Target</h2>
+<p><code>&lt;remote-host&gt;:1368</code>. Remote serves the real flag; local <code>angr_management_test</code> ships a <strong>dummy</strong> flag (<code>byuctf{test_flag}</code>) so you can develop offline.</p>
+<ul>
+<li>ELF 64-bit PIE, x86-64, <strong>not stripped</strong>, <code>pwn.red/jail</code> (<code>JAIL_TIME=900</code>).</li>
+<li>Prompt: <em>"I built a maze using goto statements! Navigate through it successfully to get the flag."</em> The name baits you into reaching for <strong>angr</strong>, which is the slow path here.</li>
+</ul>
+<h2>Recon</h2>
+<p>Functions: <code>get_input</code>, <code>main</code> (huge: <code>0x1317</code>→<code>0xee14</code>, ~56 KB, the maze), <code>flush_buf</code>.</p>
+<p><code>get_input</code> (<code>0x1270</code>):</p>
+<pre><code>fgets(buf, 5, stdin)      ; up to 4 chars + NUL
+strcspn(buf, &quot;\n&quot;)        ; strip newline
+strtol(buf, &amp;end, 10)     ; -&gt; returns an integer in eax
+</code></pre>
+<p>So <strong>each input is a number</strong> (0 to 9999). Running it:</p>
+<pre><code>$ echo AAAA | ./angr_management_test
+Arrived at 0
+That's not a valid destination
+</code></pre>
+<p><code>main</code> is 624 repeated "room" blocks. Per-room pattern:</p>
+<pre><code>mov    $0x0,%esi                 ; room id N
+lea    &quot;Arrived at %d\n&quot;,%rdi
+call   printf
+call   get_input                 ; your destination number -&gt; eax
+cmpl   $0x100,-0x4(%rbp)         ; input == 256 ?
+jne    .next
+jmp    6c68                      ; valid edge: goto another room
+.next:
+cmpl   $0x58,-0x4(%rbp)          ; input == 88 ?
+je     3192                      ; second valid edge
+puts(&quot;That's not a valid destination&quot;)
+exit(1)
+</code></pre>
+<p>It's a <strong>directed graph</strong>: each room prints its id, reads a number, and that number selects which room you jump to. Wrong number → exit. Tower of <code>goto</code>s = a maze with one or two exits per room.</p>
+<p><strong>Win room</strong> = room <code>0x270</code> (624) at <code>0xede5</code>: no <code>get_input</code>, just <code>puts(flag); return</code>:</p>
+<pre><code>ede5: mov $0x270,%esi ; &quot;Arrived at 624&quot;
+edf9: call printf
+edfe: lea 0xf047 (the flag string)
+ee08: call puts
+ee12: leave ; ret
+</code></pre>
+<h2>Why not angr</h2>
+<p>The challenge <em>name</em> screams symbolic execution, but driving angr through 72 chained <code>fgets</code>/<code>strtol</code> rounds (ASCII→int modeling, deep state) is slow and fiddly. The structure is a <strong>static, fully-recoverable CFG</strong>: every edge is a literal <code>cmp $imm</code> → <code>jmp addr</code>. So just parse the graph from the disassembly and BFS. Exact, instant, no SMT.</p>
+<h2>Solution</h2>
+<p>Dump disassembly, parse rooms + edges, BFS room 0 → room 624.</p>
+<pre><code class="language-python">import re
+from collections import deque
+lines = open('main.asm').read().splitlines()          # objdump -d --no-show-raw-insn
+rx = re.compile(r'^\s+([0-9a-f]+):\t(.*)$')
+insns = [(int(m.group(1),16), m.group(2).strip()) for l in lines if (m:=rx.match(l))]
+idx = {a:i for i,(a,_) in enumerate(insns)}
+
+# a &quot;room&quot; = `mov $imm,%esi` that feeds the &quot;Arrived at %d&quot; printf (# f019)
+rooms = {}
+for i,(a,t) in enumerate(insns):
+    if (m:=re.match(r'mov\s+\$0x([0-9a-f]+),%esi$', t)) and \
+       any('# f019' in insns[j][1] for j in range(i, min(i+4, len(insns)))):
+        rooms[a] = int(m.group(1),16)
+starts = sorted(rooms)
+WIN = next(a for a,r in rooms.items() if r == 0x270)
+
+# jump targets land on the room's mov-esi or the nop just before it
+tgt2room = {}
+for a in starts:
+    tgt2room[a] = a
+    if insns[idx[a]-1][1].startswith('nop'):
+        tgt2room[insns[idx[a]-1][0]] = a
+
+# edges: after get_input, collect (cmp value -&gt; jmp target) until exit
+adj = {}
+for k,a in enumerate(starts):
+    end = idx[starts[k+1]] if k+1 &lt; len(starts) else len(insns)
+    j = idx[a]
+    while j &lt; end and 'get_input' not in insns[j][1]: j += 1
+    el, pend = [], None
+    while j &lt; end:
+        t = insns[j][1]
+        if (mc := re.match(r'cmpl\s+\$0x([0-9a-f]+),-0x4\(%rbp\)$', t)):
+            pend = int(mc.group(1),16)
+        elif (mj := re.match(r'jne\s+([0-9a-f]+)', t)) and pend is not None:
+            if (mt := re.match(r'jmp\s+([0-9a-f]+)', insns[j+1][1])):
+                el.append((pend, tgt2room.get(int(mt.group(1),16)))); pend = None
+        elif (mje := re.match(r'je\s+([0-9a-f]+)', t)) and pend is not None:
+            el.append((pend, tgt2room.get(int(mje.group(1),16)))); pend = None
+        elif 'exit@plt' in t: break
+        j += 1
+    adj[a] = el
+
+START = 0x1323
+prev, mv, q = {START:None}, {}, deque([START])
+while q:
+    cur = q.popleft()
+    if cur == WIN: break
+    for val, room in adj.get(cur, []):
+        if room is not None and room not in prev:
+            prev[room], mv[room] = cur, val; q.append(room)
+
+path, c = [], WIN
+while c is not None: path.append(c); c = prev[c]
+path.reverse()
+moves = [mv[path[i]] for i in range(1, len(path))]
+open('moves.txt','w').write('\n'.join(map(str, moves)) + '\n')
+print(len(moves), &quot;moves&quot;)   # -&gt; 72
+</code></pre>
+<p>Verify locally then replay on the remote:</p>
+<pre><code class="language-python">import socket
+moves = open('moves.txt').read().split()
+s = socket.create_connection(('&lt;remote-host&gt;', 1368))
+for m in moves: s.sendall(m.encode()+b'\n')
+# ... recv -&gt; byuctf{g3t_w1th_th3_c0ntr01_fl0w}
+</code></pre>
+<p>Path = 72 moves: <code>256 423 495 307 39 250 391 119 105 499 123 104 536 257 608 253 74 365 543 300 571 506 595 192 383 112 17 556 93 318 114 276 18 216 449 414 124 503 71 407 78 285 481 66 381 531 82 337 600 86 230 327 472 393 348 331 14 207 402 548 528 168 530 490 378 408 518 202 87 342 329 624</code></p>
+<p>Local run ends <code>Arrived at 624 / byuctf{test_flag}</code>; remote gives the real flag.</p>
+<h2>Takeaways</h2>
+<ul>
+<li><strong>Read the structure before reaching for the heavy tool.</strong> A "maze of gotos" with literal <code>cmp imm</code> → <code>jmp</code> edges is a static CFG. Recover it directly. angr is for when constraints aren't trivially readable; here every edge is a constant.</li>
+<li>Anchor the parse on a stable signal (the <code># f019</code> "Arrived at %d" format ref) to reliably segment 624 near-identical blocks.</li>
+<li>The flag is the lesson: <code>g3t_w1th_th3_c0ntr01_fl0w</code>. Control-flow recovery beats brute symbolic execution.</li>
+<li>Dev against the dummy-flag local binary; only the final <code>moves.txt</code> replay needs the network.</li>
+</ul>
+<p><em>0xAdham</em></p>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>The name baits you toward symbolic execution. But a &#x27;maze of gotos&#x27; built from literal cmp-imm → jmp edges is a static CFG. Parse the disassembly, BFS room 0 to the win room, replay 72 moves. No SMT, instant.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-05-31</div>
+            <div><strong style="color:var(--ink)">Category:</strong> CTF</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ctf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">rev</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">control-flow</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">static-analysis</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">byuctf</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
